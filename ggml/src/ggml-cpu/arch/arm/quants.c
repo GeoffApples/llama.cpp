@@ -4051,7 +4051,7 @@ void ggml_vec_dot_iq4_xs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const v
 }
 
 #if defined(__ARM_NEON)
-// NEON-optimized dequantization for Q3_HIFI
+// NEON-optimized dequantization for Q3_HIFI using new split layout (ql + qh)
 void dequantize_row_q3_hifi(const block_q3_hifi * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % Q3_HIFI_BLOCK_SIZE == 0);
     const int64_t nb = k / Q3_HIFI_BLOCK_SIZE;
@@ -4059,53 +4059,42 @@ void dequantize_row_q3_hifi(const block_q3_hifi * GGML_RESTRICT x, float * GGML_
     for (int ib = 0; ib < nb; ++ib) {
         const block_q3_hifi * block = &x[ib];
         const float d = block->d;
-        const uint8_t * qs = block->qs;
+        const uint8_t * ql = block->ql;
+        const uint8_t * qh = block->qh;
         float * yb = y + ib * Q3_HIFI_BLOCK_SIZE;
 
-        // Process 4 values at a time with NEON
-        // Q3_HIFI_BLOCK_SIZE is 256, which is a multiple of 4
-        int i = 0;
-        for (; i < Q3_HIFI_BLOCK_SIZE - 3; i += 4) {
-            // Extract 4 3-bit values (12 bits = 1.5 bytes)
+        // Process 4 values at a time with NEON using new split layout
+        for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; i += 4) {
+            const int ql_byte = i / 4;
+            const int qh_byte = i / 8;
+            const int qh_offset = (i % 8);
+            const uint8_t ql_bits = ql[ql_byte];
+            const uint8_t qh_bits = qh[qh_byte];
+
             int32_t quant_vals[4];
-            
-            for (int j = 0; j < 4; ++j) {
-                const int byte_idx = ((i + j) * 3) / 8;
-                const int bit_offset = ((i + j) * 3) % 8;
-                uint8_t bits = (qs[byte_idx] >> bit_offset) & 7;
-                if (bit_offset > 5 && byte_idx + 1 < 96) {
-                    bits |= (qs[byte_idx + 1] << (8 - bit_offset)) & 7;
-                }
-                quant_vals[j] = (int32_t)bits - 4; // [0,7] → [-4,3]
-            }
-            
+            quant_vals[0] = ((ql_bits >> 0) & 0x03) | (((qh_bits >> (qh_offset + 0)) & 1) << 2);
+            quant_vals[1] = ((ql_bits >> 2) & 0x03) | (((qh_bits >> (qh_offset + 1)) & 1) << 2);
+            quant_vals[2] = ((ql_bits >> 4) & 0x03) | (((qh_bits >> (qh_offset + 2)) & 1) << 2);
+            quant_vals[3] = ((ql_bits >> 6) & 0x03) | (((qh_bits >> (qh_offset + 3)) & 1) << 2);
+
+            // Subtract 4 to get [-4, 3] range
+            quant_vals[0] -= 4;
+            quant_vals[1] -= 4;
+            quant_vals[2] -= 4;
+            quant_vals[3] -= 4;
+
             // Load into NEON register
             int32x4_t quant_vec = vld1q_s32(quant_vals);
-            
-            // Convert to float
+
+            // Convert to float and multiply by scale
             float32x4_t quant_f = vcvtq_f32_s32(quant_vec);
-            
-            // Multiply by scale
             float32x4_t scale_vec = vdupq_n_f32(d);
             quant_f = vmulq_f32(quant_f, scale_vec);
-            
-            // Store
+
             vst1q_f32(&yb[i], quant_f);
         }
-        
-        // Handle remaining values (scalar fallback)
-        for (; i < Q3_HIFI_BLOCK_SIZE; ++i) {
-            const int byte_idx = (i * 3) / 8;
-            const int bit_offset = (i * 3) % 8;
-            uint8_t bits = (qs[byte_idx] >> bit_offset) & 7;
-            if (bit_offset > 5 && byte_idx + 1 < 96) {
-                bits |= (qs[byte_idx + 1] << (8 - bit_offset)) & 7;
-            }
-            const int quant_val = (int)bits - 4;
-            yb[i] = quant_val * d;
-        }
 
-        // Restore outliers (still sequential, but less overhead)
+        // Restore outliers
         for (int k_idx = 0; k_idx < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k_idx) {
             const int idx = block->outlier_idx[k_idx];
             yb[idx] = GGML_FP16_TO_FP32(block->outlier_vals[k_idx]);

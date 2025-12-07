@@ -3886,5 +3886,115 @@ void dequantize_row_q3_hifi(const block_q3_hifi * GGML_RESTRICT x, float * GGML_
         }
     }
 }
+
 #endif
+
+// Q3_HIFI vec_dot with Q8_K - with AVX2 optimization
+void ggml_vec_dot_q3_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(n % Q3_HIFI_BLOCK_SIZE == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_q3_hifi * GGML_RESTRICT x = vx;
+    const block_q8_K * GGML_RESTRICT y = vy;
+
+    const int nb = n / Q3_HIFI_BLOCK_SIZE;
+
+#if defined(__AVX2__)
+    // Pre-allocate array for extracted 3-bit values
+    int8_t aux8[Q3_HIFI_BLOCK_SIZE];
+
+    float sumf = 0.0f;
+
+    for (int ib = 0; ib < nb; ++ib) {
+        const block_q3_hifi * GGML_RESTRICT block = &x[ib];
+        const float d = block->d;
+        const uint8_t * GGML_RESTRICT qs = block->qs;
+        const int8_t * GGML_RESTRICT q8 = y[ib].qs;
+        const float d8 = y[ib].d;
+
+        // Step 1: Pre-extract all 256 3-bit values into int8 array
+        for (int j = 0; j < Q3_HIFI_BLOCK_SIZE; ++j) {
+            const int bit_pos = j * 3;
+            const int byte_idx = bit_pos >> 3;
+            const int bit_offset = bit_pos & 7;
+
+            uint8_t bits = (qs[byte_idx] >> bit_offset) & 7;
+            if (bit_offset > 5) {
+                bits |= (qs[byte_idx + 1] << (8 - bit_offset)) & 7;
+            }
+            aux8[j] = (int8_t)bits - 4;  // [0,7] → [-4,3]
+        }
+
+        // Step 2: Pre-compute outlier corrections
+        float outlier_correction = 0.0f;
+        for (int k = 0; k < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k) {
+            const int idx = block->outlier_idx[k];
+            const float outlier_val = GGML_FP16_TO_FP32(block->outlier_vals[k]);
+            const float quant_val = (float)aux8[idx] * d;
+            outlier_correction += (outlier_val - quant_val) * (float)q8[idx];
+        }
+
+        // Step 3: AVX2 dot product using bias approach for 8-bit accumulation
+        // Key insight: q3 is in [-4, 3]. Add bias of 4 to get [0, 7] (unsigned).
+        // Then: (q3+4)*q8 - 4*q8 = q3*q8
+        // This allows using _mm256_maddubs_epi16 (unsigned × signed → 16-bit)
+        
+        const __m256i m4 = _mm256_set1_epi8(4);  // bias constant
+        __m256i sumi = _mm256_setzero_si256();
+
+        for (int j = 0; j < Q3_HIFI_BLOCK_SIZE; j += 32) {
+            // Load 32 extracted 3-bit values (signed, [-4, 3])
+            const __m256i q3_signed = _mm256_loadu_si256((const __m256i *)(aux8 + j));
+
+            // Load 32 Q8_K values (signed)
+            const __m256i q8v = _mm256_loadu_si256((const __m256i *)(q8 + j));
+
+            // Add bias to make q3 unsigned: [-4,3] → [0,7]
+            const __m256i q3_biased = _mm256_add_epi8(q3_signed, m4);
+
+            // Compute (q3+4) * q8 using maddubs (unsigned × signed)
+            // maddubs sums adjacent pairs: (a0*b0 + a1*b1), (a2*b2 + a3*b3), ...
+            const __m256i prod_biased = _mm256_maddubs_epi16(q3_biased, q8v);
+
+            // Compute bias correction: 4 * q8, summed in pairs
+            // maddubs(4,4,4,..., q8) = 4*q8[0] + 4*q8[1], 4*q8[2] + 4*q8[3], ...
+            const __m256i correction = _mm256_maddubs_epi16(m4, q8v);
+
+            // Subtract correction: (q3+4)*q8 - 4*q8 = q3*q8
+            const __m256i prod = _mm256_sub_epi16(prod_biased, correction);
+
+            // Sum pairs of 16-bit to 32-bit using madd with ones
+            const __m256i ones = _mm256_set1_epi16(1);
+            const __m256i sum32 = _mm256_madd_epi16(prod, ones);
+
+            // Accumulate
+            sumi = _mm256_add_epi32(sumi, sum32);
+        }
+
+        // Horizontal sum of sumi (8 x int32)
+        __m128i sum128 = _mm_add_epi32(_mm256_extracti128_si256(sumi, 0),
+                                        _mm256_extracti128_si256(sumi, 1));
+        sum128 = _mm_add_epi32(sum128, _mm_srli_si128(sum128, 8));
+        sum128 = _mm_add_epi32(sum128, _mm_srli_si128(sum128, 4));
+        const int32_t isum = _mm_cvtsi128_si32(sum128);
+
+        // Step 4: Combine with scaling
+        const float dd = d * d8;
+        sumf += dd * (float)isum + outlier_correction * d8;
+    }
+
+    *s = sumf;
+
+#else
+    // Fallback to generic implementation
+    UNUSED(x);
+    UNUSED(y);
+    UNUSED(nb);
+    ggml_vec_dot_q3_hifi_q8_K_generic(n, s, bs, vx, bx, vy, by, nrc);
+#endif
+}
 

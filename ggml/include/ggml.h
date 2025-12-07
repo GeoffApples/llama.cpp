@@ -373,12 +373,14 @@ extern "C" {
     GGML_API void        ggml_fp32_to_bf16_row(const float *, ggml_bf16_t *, int64_t);
 
     // Q3_HIFI: 3-bit + 6 FP16 outliers per 256 weights (improved accuracy)
+    // Uses Q3_K-style split layout: 2 low bits + 1 high bit for SIMD-friendly extraction
     #define Q3_HIFI_BLOCK_SIZE           256
     #define Q3_HIFI_OUTFIERS_PER_BLOCK   6
 
     typedef struct {
         float    d;                                        // scale for 3-bit bulk
-        uint8_t  qs[96];                                   // 256 x 3-bit packed
+        uint8_t  ql[64];                                   // 256 x 2-bit low bits (4 values per byte)
+        uint8_t  qh[32];                                   // 256 x 1-bit high bits (8 values per byte)
         uint16_t outlier_idx[Q3_HIFI_OUTFIERS_PER_BLOCK];  // indices of outliers
         uint16_t outlier_vals[Q3_HIFI_OUTFIERS_PER_BLOCK]; // FP16 outlier values
     } block_q3_hifi;

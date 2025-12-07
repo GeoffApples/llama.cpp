@@ -553,7 +553,13 @@ void ggml_vec_dot_q3_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, c
     *s = sumf;
 }
 
-// Q3_HIFI dot product with Q8_K
+// Q3_HIFI dot product with Q8_K - OPTIMIZED
+// This function is written to help the compiler auto-vectorize (similar to Q3_K approach)
+// Key optimizations:
+// 1. Pre-extract all 3-bit values into int8 array upfront
+// 2. Pre-compute outlier corrections outside the inner loop
+// 3. Use integer accumulation with 8 parallel sums
+// 4. Process in groups of 8 for cache efficiency and vectorization
 void ggml_vec_dot_q3_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % Q3_HIFI_BLOCK_SIZE == 0);
     assert(nrc == 1);
@@ -567,54 +573,84 @@ void ggml_vec_dot_q3_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs
 
     const int nb = n / Q3_HIFI_BLOCK_SIZE;
 
-    float sumf = 0.0f;
+    // Pre-allocate arrays - written this way to help compiler vectorize
+    int8_t  aux8[Q3_HIFI_BLOCK_SIZE];
+    int32_t aux32[8];
+    float   sums[8];
+    memset(sums, 0, 8 * sizeof(float));
 
     for (int ib = 0; ib < nb; ++ib) {
-        const block_q3_hifi * block = &x[ib];
+        const block_q3_hifi * GGML_RESTRICT block = &x[ib];
         const float d = block->d;
-        const uint8_t * qs = block->qs;
-        const int8_t * q8 = y[ib].qs;
+        const uint8_t * GGML_RESTRICT qs = block->qs;
+        const int8_t * GGML_RESTRICT q8 = y[ib].qs;
         const float d8 = y[ib].d;
 
-        // Dequantize 3-bit values and compute dot product
-        float block_sum = 0.0f;
+        // Step 1: Pre-extract all 256 3-bit values into int8 array
+        // This avoids repeated bit extraction in the inner loop
+        int8_t * GGML_RESTRICT a = aux8;
+        for (int j = 0; j < Q3_HIFI_BLOCK_SIZE; j += 8) {
+            // Unroll extraction for 8 values at a time
+            for (int k = 0; k < 8; ++k) {
+                const int bit_pos = (j + k) * 3;
+                const int byte_idx = bit_pos >> 3;  // / 8
+                const int bit_offset = bit_pos & 7; // % 8
 
-        for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
-            // Extract 3-bit value
-            const int byte_idx = (i * 3) / 8;
-            const int bit_offset = (i * 3) % 8;
-            uint8_t bits = (qs[byte_idx] >> bit_offset) & 7;
-            if (bit_offset > 5) {
-                bits |= (qs[byte_idx + 1] << (8 - bit_offset)) & 7;
+                uint8_t bits = (qs[byte_idx] >> bit_offset) & 7;
+                if (bit_offset > 5) {
+                    bits |= (qs[byte_idx + 1] << (8 - bit_offset)) & 7;
+                }
+                a[j + k] = (int8_t)bits - 4;  // [0,7] → [-4,3]
             }
-            const int quant_val = (int)bits - 4; // [0,7] → [-4,3]
-            const float dequant = quant_val * d;
-
-            block_sum += dequant * q8[i];
         }
 
-        // Apply outlier corrections
+        // Step 2: Pre-compute outlier corrections
+        // Calculate (outlier_val - quantized_val) * q8[idx] for each outlier
+        float outlier_correction = 0.0f;
         for (int k = 0; k < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k) {
             const int idx = block->outlier_idx[k];
             const float outlier_val = GGML_FP16_TO_FP32(block->outlier_vals[k]);
+            const float quant_val = (float)aux8[idx] * d;
 
-            // Subtract the quantized approximation and add the true outlier value
-            const int byte_idx = (idx * 3) / 8;
-            const int bit_offset = (idx * 3) % 8;
-            uint8_t bits = (qs[byte_idx] >> bit_offset) & 7;
-            if (bit_offset > 5) {
-                bits |= (qs[byte_idx + 1] << (8 - bit_offset)) & 7;
-            }
-            const int quant_val = (int)bits - 4;
-            const float dequant = quant_val * d;
-
-            block_sum -= dequant * q8[idx];  // Remove quantized contribution
-            block_sum += outlier_val * q8[idx];  // Add true outlier value
+            // Correction = (true_value - quantized_value) * q8[idx]
+            outlier_correction += (outlier_val - quant_val) * (float)q8[idx];
         }
 
-        sumf += block_sum * d8;
+        // Step 3: Integer accumulation with 8 parallel sums
+        // This pattern helps compilers auto-vectorize
+        memset(aux32, 0, 8 * sizeof(int32_t));
+
+        a = aux8;
+        const int8_t * GGML_RESTRICT q8_ptr = q8;
+        for (int j = 0; j < Q3_HIFI_BLOCK_SIZE / 16; ++j) {
+            // First 8 values
+            for (int l = 0; l < 8; ++l) {
+                aux32[l] += (int32_t)a[l] * (int32_t)q8_ptr[l];
+            }
+            a += 8; q8_ptr += 8;
+
+            // Second 8 values
+            for (int l = 0; l < 8; ++l) {
+                aux32[l] += (int32_t)a[l] * (int32_t)q8_ptr[l];
+            }
+            a += 8; q8_ptr += 8;
+        }
+
+        // Step 4: Combine integer sums with scaling
+        const float dd = d * d8;
+        for (int l = 0; l < 8; ++l) {
+            sums[l] += dd * (float)aux32[l];
+        }
+
+        // Add outlier correction (already includes q8 values, just needs d8 scaling)
+        sums[0] += outlier_correction * d8;
     }
 
+    // Final reduction
+    float sumf = 0.0f;
+    for (int l = 0; l < 8; ++l) {
+        sumf += sums[l];
+    }
     *s = sumf;
 }
 

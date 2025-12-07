@@ -4114,3 +4114,9 @@ void dequantize_row_q3_hifi(const block_q3_hifi * GGML_RESTRICT x, float * GGML_
 }
 #endif
 
+// Q3_HIFI vec_dot with Q8_K - currently uses generic implementation
+// TODO: Add NEON optimization in Step 3.3
+void ggml_vec_dot_q3_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    ggml_vec_dot_q3_hifi_q8_K_generic(n, s, bs, vx, bx, vy, by, nrc);
+}
+

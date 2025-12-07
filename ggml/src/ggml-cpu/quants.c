@@ -553,6 +553,76 @@ void ggml_vec_dot_q3_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, c
     *s = sumf;
 }
 
+// Q3_HIFI dot product with Q8_K
+void ggml_vec_dot_q3_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(n % Q3_HIFI_BLOCK_SIZE == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_q3_hifi * GGML_RESTRICT x = vx;
+    const block_q8_K * GGML_RESTRICT y = vy;
+
+    const int nb = n / Q3_HIFI_BLOCK_SIZE;
+
+    float sumf = 0.0f;
+
+    for (int ib = 0; ib < nb; ++ib) {
+        const block_q3_hifi * block = &x[ib];
+        const float d = block->d;
+        const uint8_t * qs = block->qs;
+        const int8_t * q8 = y[ib].qs;
+        const float d8 = y[ib].d;
+
+        // Dequantize 3-bit values and compute dot product
+        float block_sum = 0.0f;
+
+        for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
+            // Extract 3-bit value
+            const int byte_idx = (i * 3) / 8;
+            const int bit_offset = (i * 3) % 8;
+            uint8_t bits = (qs[byte_idx] >> bit_offset) & 7;
+            if (bit_offset > 5) {
+                bits |= (qs[byte_idx + 1] << (8 - bit_offset)) & 7;
+            }
+            const int quant_val = (int)bits - 4; // [0,7] → [-4,3]
+            const float dequant = quant_val * d;
+
+            block_sum += dequant * q8[i];
+        }
+
+        // Apply outlier corrections
+        for (int k = 0; k < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k) {
+            const int idx = block->outlier_idx[k];
+            const float outlier_val = GGML_FP16_TO_FP32(block->outlier_vals[k]);
+
+            // Subtract the quantized approximation and add the true outlier value
+            const int byte_idx = (idx * 3) / 8;
+            const int bit_offset = (idx * 3) % 8;
+            uint8_t bits = (qs[byte_idx] >> bit_offset) & 7;
+            if (bit_offset > 5) {
+                bits |= (qs[byte_idx + 1] << (8 - bit_offset)) & 7;
+            }
+            const int quant_val = (int)bits - 4;
+            const float dequant = quant_val * d;
+
+            block_sum -= dequant * q8[idx];  // Remove quantized contribution
+            block_sum += outlier_val * q8[idx];  // Add true outlier value
+        }
+
+        sumf += block_sum * d8;
+    }
+
+    *s = sumf;
+}
+
+// Wrapper that calls the generic implementation
+void ggml_vec_dot_q3_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    ggml_vec_dot_q3_hifi_q8_K_generic(n, s, bs, vx, bx, vy, by, nrc);
+}
+
 void ggml_vec_dot_q4_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % QK_K == 0);
     assert(nrc == 1);

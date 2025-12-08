@@ -3819,7 +3819,7 @@ void ggml_vec_dot_iq4_xs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const v
 }
 
 #if defined(__AVX2__)
-// AVX2-optimized dequantization for Q3_HIFI (split layout: ql + qh)
+// AVX2-optimized dequantization for Q3_HIFI (linear qh layout)
 void dequantize_row_q3_hifi(const block_q3_hifi * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % Q3_HIFI_BLOCK_SIZE == 0);
     const int64_t nb = k / Q3_HIFI_BLOCK_SIZE;
@@ -3831,7 +3831,7 @@ void dequantize_row_q3_hifi(const block_q3_hifi * GGML_RESTRICT x, float * GGML_
         const uint8_t * qh = block->qh;
         float * yb = y + ib * Q3_HIFI_BLOCK_SIZE;
 
-        // Dequantize using split layout (ql: 2-bit low, qh: 1-bit high)
+        // Dequantize using linear qh layout (8 values per byte)
         for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
             const int ql_byte = i / 4;
             const int ql_shift = (i % 4) * 2;
@@ -3854,7 +3854,7 @@ void dequantize_row_q3_hifi(const block_q3_hifi * GGML_RESTRICT x, float * GGML_
 }
 #endif
 
-// Q3_HIFI vec_dot with Q8_K - AVX2 with scalar extraction + SIMD dot product
+// Q3_HIFI vec_dot with Q8_K - AVX2 with unrolled scalar extraction + SIMD dot
 void ggml_vec_dot_q3_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % Q3_HIFI_BLOCK_SIZE == 0);
     assert(nrc == 1);
@@ -3887,7 +3887,7 @@ void ggml_vec_dot_q3_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const 
         for (int j = 0; j < Q3_HIFI_BLOCK_SIZE; j += 32) {
             int8_t q3_buf[32];
 
-            // Fully unrolled extraction for 32 values
+            // Fully unrolled extraction for 32 values using linear layout
             const uint8_t ql0 = ql[j/4 + 0], ql1 = ql[j/4 + 1];
             const uint8_t ql2 = ql[j/4 + 2], ql3 = ql[j/4 + 3];
             const uint8_t ql4 = ql[j/4 + 4], ql5 = ql[j/4 + 5];

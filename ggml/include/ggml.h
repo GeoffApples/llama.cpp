@@ -381,7 +381,7 @@ extern "C" {
         float    d;                                        // scale for 3-bit bulk
         uint8_t  ql[64];                                   // 256 x 2-bit low bits (4 values per byte)
         uint8_t  qh[32];                                   // 256 x 1-bit high bits (8 values per byte)
-        uint16_t outlier_idx[Q3_HIFI_OUTFIERS_PER_BLOCK];  // indices of outliers
+        uint8_t  outlier_idx[Q3_HIFI_OUTFIERS_PER_BLOCK];  // indices of outliers (0-255 fits in 8 bits)
         uint16_t outlier_vals[Q3_HIFI_OUTFIERS_PER_BLOCK]; // FP16 outlier values
     } block_q3_hifi;
 

@@ -3818,42 +3818,6 @@ void ggml_vec_dot_iq4_xs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const v
 #endif
 }
 
-#if defined(__AVX2__)
-// AVX2-optimized dequantization for Q3_HIFI (linear qh layout)
-void dequantize_row_q3_hifi(const block_q3_hifi * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
-    assert(k % Q3_HIFI_BLOCK_SIZE == 0);
-    const int64_t nb = k / Q3_HIFI_BLOCK_SIZE;
-
-    for (int ib = 0; ib < nb; ++ib) {
-        const block_q3_hifi * block = &x[ib];
-        const float d = block->d;
-        const uint8_t * ql = block->ql;
-        const uint8_t * qh = block->qh;
-        float * yb = y + ib * Q3_HIFI_BLOCK_SIZE;
-
-        // Dequantize using linear qh layout (8 values per byte)
-        for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
-            const int ql_byte = i / 4;
-            const int ql_shift = (i % 4) * 2;
-            const int low = (ql[ql_byte] >> ql_shift) & 0x03;
-
-            const int qh_byte = i / 8;
-            const int qh_bit = i % 8;
-            const int high = (qh[qh_byte] >> qh_bit) & 0x01;
-
-            const int quant_val = (low | (high << 2)) - 4;
-            yb[i] = quant_val * d;
-        }
-
-        // Restore outliers
-        for (int k_idx = 0; k_idx < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k_idx) {
-            const int idx = block->outlier_idx[k_idx];
-            yb[idx] = GGML_FP16_TO_FP32(block->outlier_vals[k_idx]);
-        }
-    }
-}
-#endif
-
 // Q3_HIFI vec_dot with Q8_K - AVX2 with unrolled scalar extraction + SIMD dot
 void ggml_vec_dot_q3_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % Q3_HIFI_BLOCK_SIZE == 0);

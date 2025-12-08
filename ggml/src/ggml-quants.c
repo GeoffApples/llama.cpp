@@ -487,7 +487,7 @@ void quantize_row_q3_hifi_ref(const float * GGML_RESTRICT x, block_q3_hifi * GGM
         // --- Store outliers in FP16 ---
         for (int k_idx = 0; k_idx < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k_idx) {
             const int idx = outlier_idx[k_idx];
-            block->outlier_idx[k_idx] = (uint16_t)idx;
+            block->outlier_idx[k_idx] = (uint8_t)idx;
             block->outlier_vals[k_idx] = GGML_FP32_TO_FP16(xb[idx]);
         }
     }
@@ -563,7 +563,7 @@ static void quantize_row_q3_hifi_impl(const float * GGML_RESTRICT x, block_q3_hi
         // --- Store outliers in FP16 ---
         for (int k_idx = 0; k_idx < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k_idx) {
             const int idx = outlier_idx[k_idx];
-            block->outlier_idx[k_idx] = (uint16_t)idx;
+            block->outlier_idx[k_idx] = (uint8_t)idx;
             block->outlier_vals[k_idx] = GGML_FP32_TO_FP16(xb[idx]);
         }
     }

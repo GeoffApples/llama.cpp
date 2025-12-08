@@ -553,15 +553,8 @@ void ggml_vec_dot_q3_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, c
     *s = sumf;
 }
 
-// Q3_HIFI dot product with Q8_K - OPTIMIZED
-// This function is written to help the compiler auto-vectorize (similar to Q3_K approach)
-// Key optimizations:
-// 1. Pre-extract all 3-bit values into int8 array upfront
-// 2. Pre-compute outlier corrections outside the inner loop
-// Optimized for new Q3_K-style split layout (ql + qh)
-// 1. Extract low 2 bits from ql (4 values per byte) - simple mask + shift
-// 2. Extract high 1 bit from qh (8 values per byte) - simple mask + shift
-// 3. Use integer accumulation with 8 parallel sums
+// Q3_HIFI dot product with Q8_K - generic implementation
+// Uses split layout: ql[64] for 2-bit low bits, qh[32] for 1-bit high bits
 void ggml_vec_dot_q3_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % Q3_HIFI_BLOCK_SIZE == 0);
     assert(nrc == 1);
@@ -575,11 +568,7 @@ void ggml_vec_dot_q3_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs
 
     const int nb = n / Q3_HIFI_BLOCK_SIZE;
 
-    // Pre-allocate arrays - written this way to help compiler vectorize
-    int8_t  aux8[Q3_HIFI_BLOCK_SIZE];
-    int32_t aux32[8];
-    float   sums[8];
-    memset(sums, 0, 8 * sizeof(float));
+    float sumf = 0.0f;
 
     for (int ib = 0; ib < nb; ++ib) {
         const block_q3_hifi * GGML_RESTRICT block = &x[ib];
@@ -589,74 +578,48 @@ void ggml_vec_dot_q3_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs
         const int8_t * GGML_RESTRICT q8 = y[ib].qs;
         const float d8 = y[ib].d;
 
-        // Step 1: Extract all 256 3-bit values using new split layout
-        // Much simpler than old cross-byte extraction!
-        for (int j = 0; j < Q3_HIFI_BLOCK_SIZE; j += 8) {
-            // Process 8 values at a time
-            const int ql_base = j / 4;   // 2 bytes of ql for 8 values
-            const int qh_byte = j / 8;   // 1 byte of qh for 8 values
-            const uint8_t qh_bits = qh[qh_byte];
+        int32_t isum = 0;
 
-            // Extract first 4 values from ql[ql_base]
-            const uint8_t ql0 = ql[ql_base];
-            aux8[j + 0] = (int8_t)((ql0 >> 0) & 0x03) | (((qh_bits >> 0) & 1) << 2) - 4;
-            aux8[j + 1] = (int8_t)((ql0 >> 2) & 0x03) | (((qh_bits >> 1) & 1) << 2) - 4;
-            aux8[j + 2] = (int8_t)((ql0 >> 4) & 0x03) | (((qh_bits >> 2) & 1) << 2) - 4;
-            aux8[j + 3] = (int8_t)((ql0 >> 6) & 0x03) | (((qh_bits >> 3) & 1) << 2) - 4;
+        // Process all 256 values
+        for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
+            // Extract low 2 bits from ql (4 values per byte)
+            const int ql_byte = i / 4;
+            const int ql_shift = (i % 4) * 2;
+            const int low = (ql[ql_byte] >> ql_shift) & 0x03;
 
-            // Extract second 4 values from ql[ql_base + 1]
-            const uint8_t ql1 = ql[ql_base + 1];
-            aux8[j + 4] = (int8_t)((ql1 >> 0) & 0x03) | (((qh_bits >> 4) & 1) << 2) - 4;
-            aux8[j + 5] = (int8_t)((ql1 >> 2) & 0x03) | (((qh_bits >> 5) & 1) << 2) - 4;
-            aux8[j + 6] = (int8_t)((ql1 >> 4) & 0x03) | (((qh_bits >> 6) & 1) << 2) - 4;
-            aux8[j + 7] = (int8_t)((ql1 >> 6) & 0x03) | (((qh_bits >> 7) & 1) << 2) - 4;
+            // Extract high 1 bit from qh (8 values per byte)
+            const int qh_byte = i / 8;
+            const int qh_bit = i % 8;
+            const int high = (qh[qh_byte] >> qh_bit) & 0x01;
+
+            // Combine: value = (low | (high << 2)) - 4
+            const int q3_val = (low | (high << 2)) - 4;
+            isum += q3_val * q8[i];
         }
 
-        // Step 2: Pre-compute outlier corrections
+        // Compute outlier corrections
         float outlier_correction = 0.0f;
         for (int k = 0; k < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k) {
             const int idx = block->outlier_idx[k];
+            const int ql_byte = idx / 4;
+            const int ql_shift = (idx % 4) * 2;
+            const int low = (ql[ql_byte] >> ql_shift) & 0x03;
+            const int qh_byte = idx / 8;
+            const int qh_bit = idx % 8;
+            const int high = (qh[qh_byte] >> qh_bit) & 0x01;
+            const int q3_val = (low | (high << 2)) - 4;
+
             const float outlier_val = GGML_FP16_TO_FP32(block->outlier_vals[k]);
-            const float quant_val = (float)aux8[idx] * d;
+            const float quant_val = (float)q3_val * d;
             outlier_correction += (outlier_val - quant_val) * (float)q8[idx];
         }
 
-        // Step 3: Integer accumulation with 8 parallel sums
-        memset(aux32, 0, 8 * sizeof(int32_t));
-
-        int8_t * GGML_RESTRICT a = aux8;
-        const int8_t * GGML_RESTRICT q8_ptr = q8;
-        for (int j = 0; j < Q3_HIFI_BLOCK_SIZE / 16; ++j) {
-            for (int l = 0; l < 8; ++l) {
-                aux32[l] += (int32_t)a[l] * (int32_t)q8_ptr[l];
-            }
-            a += 8; q8_ptr += 8;
-            for (int l = 0; l < 8; ++l) {
-                aux32[l] += (int32_t)a[l] * (int32_t)q8_ptr[l];
-            }
-            a += 8; q8_ptr += 8;
-        }
-
-        // Step 4: Combine integer sums with scaling
-        const float dd = d * d8;
-        for (int l = 0; l < 8; ++l) {
-            sums[l] += dd * (float)aux32[l];
-        }
-
-        // Add outlier correction (already includes q8 values, just needs d8 scaling)
-        sums[0] += outlier_correction * d8;
+        // Combine with scaling
+        sumf += d * d8 * (float)isum + outlier_correction * d8;
     }
 
-    // Final reduction
-    float sumf = 0.0f;
-    for (int l = 0; l < 8; ++l) {
-        sumf += sums[l];
-    }
     *s = sumf;
 }
-
-// Note: ggml_vec_dot_q3_hifi_q8_K is defined in arch/x86/quants.c (with AVX2) or arch/arm/quants.c (with NEON)
-// When neither is available, it falls back to ggml_vec_dot_q3_hifi_q8_K_generic
 
 void ggml_vec_dot_q4_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % QK_K == 0);

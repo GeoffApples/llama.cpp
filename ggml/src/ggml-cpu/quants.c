@@ -580,7 +580,7 @@ void ggml_vec_dot_q3_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs
 
         int32_t isum = 0;
 
-        // Process all 256 values
+        // Process all 256 values using linear qh layout
         for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
             // Extract low 2 bits from ql (4 values per byte)
             const int ql_byte = i / 4;

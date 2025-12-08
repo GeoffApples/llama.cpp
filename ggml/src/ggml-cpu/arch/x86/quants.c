@@ -3819,7 +3819,7 @@ void ggml_vec_dot_iq4_xs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const v
 }
 
 #if defined(__AVX2__)
-// AVX2-optimized dequantization for Q3_HIFI using new split layout (ql + qh)
+// AVX2-optimized dequantization for Q3_HIFI (split layout: ql + qh)
 void dequantize_row_q3_hifi(const block_q3_hifi * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % Q3_HIFI_BLOCK_SIZE == 0);
     const int64_t nb = k / Q3_HIFI_BLOCK_SIZE;
@@ -3831,37 +3831,18 @@ void dequantize_row_q3_hifi(const block_q3_hifi * GGML_RESTRICT x, float * GGML_
         const uint8_t * qh = block->qh;
         float * yb = y + ib * Q3_HIFI_BLOCK_SIZE;
 
-        // Process 8 values at a time using the new split layout
-        // Much simpler extraction than old cross-byte format!
-        for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; i += 8) {
-            const int ql_base = i / 4;    // 2 bytes of ql for 8 values
-            const int qh_byte = i / 8;    // 1 byte of qh for 8 values
-            const uint8_t ql0 = ql[ql_base];
-            const uint8_t ql1 = ql[ql_base + 1];
-            const uint8_t qh_bits = qh[qh_byte];
+        // Dequantize using split layout (ql: 2-bit low, qh: 1-bit high)
+        for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
+            const int ql_byte = i / 4;
+            const int ql_shift = (i % 4) * 2;
+            const int low = (ql[ql_byte] >> ql_shift) & 0x03;
 
-            // Extract 8 values: combine low 2 bits from ql with high 1 bit from qh
-            int32_t quant_vals_arr[8];
-            quant_vals_arr[0] = ((ql0 >> 0) & 0x03) | (((qh_bits >> 0) & 1) << 2);
-            quant_vals_arr[1] = ((ql0 >> 2) & 0x03) | (((qh_bits >> 1) & 1) << 2);
-            quant_vals_arr[2] = ((ql0 >> 4) & 0x03) | (((qh_bits >> 2) & 1) << 2);
-            quant_vals_arr[3] = ((ql0 >> 6) & 0x03) | (((qh_bits >> 3) & 1) << 2);
-            quant_vals_arr[4] = ((ql1 >> 0) & 0x03) | (((qh_bits >> 4) & 1) << 2);
-            quant_vals_arr[5] = ((ql1 >> 2) & 0x03) | (((qh_bits >> 5) & 1) << 2);
-            quant_vals_arr[6] = ((ql1 >> 4) & 0x03) | (((qh_bits >> 6) & 1) << 2);
-            quant_vals_arr[7] = ((ql1 >> 6) & 0x03) | (((qh_bits >> 7) & 1) << 2);
+            const int qh_byte = i / 8;
+            const int qh_bit = i % 8;
+            const int high = (qh[qh_byte] >> qh_bit) & 0x01;
 
-            // Build vector, subtract 4, convert to float, scale
-            __m256i quant_vals = _mm256_set_epi32(
-                quant_vals_arr[7] - 4, quant_vals_arr[6] - 4, quant_vals_arr[5] - 4, quant_vals_arr[4] - 4,
-                quant_vals_arr[3] - 4, quant_vals_arr[2] - 4, quant_vals_arr[1] - 4, quant_vals_arr[0] - 4
-            );
-
-            __m256 quant_f = _mm256_cvtepi32_ps(quant_vals);
-            __m256 scale_vec = _mm256_set1_ps(d);
-            quant_f = _mm256_mul_ps(quant_f, scale_vec);
-
-            _mm256_storeu_ps(&yb[i], quant_f);
+            const int quant_val = (low | (high << 2)) - 4;
+            yb[i] = quant_val * d;
         }
 
         // Restore outliers
@@ -3871,10 +3852,9 @@ void dequantize_row_q3_hifi(const block_q3_hifi * GGML_RESTRICT x, float * GGML_
         }
     }
 }
-
 #endif
 
-// Q3_HIFI vec_dot with Q8_K - with AVX2 optimization
+// Q3_HIFI vec_dot with Q8_K - AVX2 with scalar extraction + SIMD dot product
 void ggml_vec_dot_q3_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % Q3_HIFI_BLOCK_SIZE == 0);
     assert(nrc == 1);
@@ -3889,8 +3869,7 @@ void ggml_vec_dot_q3_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const 
     const int nb = n / Q3_HIFI_BLOCK_SIZE;
 
 #if defined(__AVX2__)
-    // Pre-allocate array for extracted 3-bit values
-    int8_t aux8[Q3_HIFI_BLOCK_SIZE];
+    const __m256i m4 = _mm256_set1_epi8(4);
 
     float sumf = 0.0f;
 
@@ -3902,52 +3881,67 @@ void ggml_vec_dot_q3_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const 
         const int8_t * GGML_RESTRICT q8 = y[ib].qs;
         const float d8 = y[ib].d;
 
-        // Step 1: Extract all 256 3-bit values using new split layout
-        // Much simpler than old cross-byte extraction - no branches!
-        for (int j = 0; j < Q3_HIFI_BLOCK_SIZE; j += 8) {
-            const int ql_base = j / 4;
-            const int qh_byte = j / 8;
-            const uint8_t ql0 = ql[ql_base];
-            const uint8_t ql1 = ql[ql_base + 1];
-            const uint8_t qh_bits = qh[qh_byte];
-
-            // Extract 8 values: low 2 bits from ql, high 1 bit from qh
-            aux8[j + 0] = (int8_t)(((ql0 >> 0) & 0x03) | (((qh_bits >> 0) & 1) << 2)) - 4;
-            aux8[j + 1] = (int8_t)(((ql0 >> 2) & 0x03) | (((qh_bits >> 1) & 1) << 2)) - 4;
-            aux8[j + 2] = (int8_t)(((ql0 >> 4) & 0x03) | (((qh_bits >> 2) & 1) << 2)) - 4;
-            aux8[j + 3] = (int8_t)(((ql0 >> 6) & 0x03) | (((qh_bits >> 3) & 1) << 2)) - 4;
-            aux8[j + 4] = (int8_t)(((ql1 >> 0) & 0x03) | (((qh_bits >> 4) & 1) << 2)) - 4;
-            aux8[j + 5] = (int8_t)(((ql1 >> 2) & 0x03) | (((qh_bits >> 5) & 1) << 2)) - 4;
-            aux8[j + 6] = (int8_t)(((ql1 >> 4) & 0x03) | (((qh_bits >> 6) & 1) << 2)) - 4;
-            aux8[j + 7] = (int8_t)(((ql1 >> 6) & 0x03) | (((qh_bits >> 7) & 1) << 2)) - 4;
-        }
-
-        // Step 2: Pre-compute outlier corrections
-        float outlier_correction = 0.0f;
-        for (int k = 0; k < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k) {
-            const int idx = block->outlier_idx[k];
-            const float outlier_val = GGML_FP16_TO_FP32(block->outlier_vals[k]);
-            const float quant_val = (float)aux8[idx] * d;
-            outlier_correction += (outlier_val - quant_val) * (float)q8[idx];
-        }
-
-        // Step 3: AVX2 dot product using bias approach for 8-bit accumulation
-        const __m256i m4 = _mm256_set1_epi8(4);
         __m256i sumi = _mm256_setzero_si256();
 
+        // Process 32 values at a time with unrolled scalar extraction
         for (int j = 0; j < Q3_HIFI_BLOCK_SIZE; j += 32) {
-            const __m256i q3_signed = _mm256_loadu_si256((const __m256i *)(aux8 + j));
+            int8_t q3_buf[32];
+
+            // Fully unrolled extraction for 32 values
+            const uint8_t ql0 = ql[j/4 + 0], ql1 = ql[j/4 + 1];
+            const uint8_t ql2 = ql[j/4 + 2], ql3 = ql[j/4 + 3];
+            const uint8_t ql4 = ql[j/4 + 4], ql5 = ql[j/4 + 5];
+            const uint8_t ql6 = ql[j/4 + 6], ql7 = ql[j/4 + 7];
+            const uint8_t qh0 = qh[j/8 + 0], qh1 = qh[j/8 + 1];
+            const uint8_t qh2 = qh[j/8 + 2], qh3 = qh[j/8 + 3];
+
+            q3_buf[0]  = (int8_t)(((ql0 >> 0) & 3) | (((qh0 >> 0) & 1) << 2)) - 4;
+            q3_buf[1]  = (int8_t)(((ql0 >> 2) & 3) | (((qh0 >> 1) & 1) << 2)) - 4;
+            q3_buf[2]  = (int8_t)(((ql0 >> 4) & 3) | (((qh0 >> 2) & 1) << 2)) - 4;
+            q3_buf[3]  = (int8_t)(((ql0 >> 6) & 3) | (((qh0 >> 3) & 1) << 2)) - 4;
+            q3_buf[4]  = (int8_t)(((ql1 >> 0) & 3) | (((qh0 >> 4) & 1) << 2)) - 4;
+            q3_buf[5]  = (int8_t)(((ql1 >> 2) & 3) | (((qh0 >> 5) & 1) << 2)) - 4;
+            q3_buf[6]  = (int8_t)(((ql1 >> 4) & 3) | (((qh0 >> 6) & 1) << 2)) - 4;
+            q3_buf[7]  = (int8_t)(((ql1 >> 6) & 3) | (((qh0 >> 7) & 1) << 2)) - 4;
+
+            q3_buf[8]  = (int8_t)(((ql2 >> 0) & 3) | (((qh1 >> 0) & 1) << 2)) - 4;
+            q3_buf[9]  = (int8_t)(((ql2 >> 2) & 3) | (((qh1 >> 1) & 1) << 2)) - 4;
+            q3_buf[10] = (int8_t)(((ql2 >> 4) & 3) | (((qh1 >> 2) & 1) << 2)) - 4;
+            q3_buf[11] = (int8_t)(((ql2 >> 6) & 3) | (((qh1 >> 3) & 1) << 2)) - 4;
+            q3_buf[12] = (int8_t)(((ql3 >> 0) & 3) | (((qh1 >> 4) & 1) << 2)) - 4;
+            q3_buf[13] = (int8_t)(((ql3 >> 2) & 3) | (((qh1 >> 5) & 1) << 2)) - 4;
+            q3_buf[14] = (int8_t)(((ql3 >> 4) & 3) | (((qh1 >> 6) & 1) << 2)) - 4;
+            q3_buf[15] = (int8_t)(((ql3 >> 6) & 3) | (((qh1 >> 7) & 1) << 2)) - 4;
+
+            q3_buf[16] = (int8_t)(((ql4 >> 0) & 3) | (((qh2 >> 0) & 1) << 2)) - 4;
+            q3_buf[17] = (int8_t)(((ql4 >> 2) & 3) | (((qh2 >> 1) & 1) << 2)) - 4;
+            q3_buf[18] = (int8_t)(((ql4 >> 4) & 3) | (((qh2 >> 2) & 1) << 2)) - 4;
+            q3_buf[19] = (int8_t)(((ql4 >> 6) & 3) | (((qh2 >> 3) & 1) << 2)) - 4;
+            q3_buf[20] = (int8_t)(((ql5 >> 0) & 3) | (((qh2 >> 4) & 1) << 2)) - 4;
+            q3_buf[21] = (int8_t)(((ql5 >> 2) & 3) | (((qh2 >> 5) & 1) << 2)) - 4;
+            q3_buf[22] = (int8_t)(((ql5 >> 4) & 3) | (((qh2 >> 6) & 1) << 2)) - 4;
+            q3_buf[23] = (int8_t)(((ql5 >> 6) & 3) | (((qh2 >> 7) & 1) << 2)) - 4;
+
+            q3_buf[24] = (int8_t)(((ql6 >> 0) & 3) | (((qh3 >> 0) & 1) << 2)) - 4;
+            q3_buf[25] = (int8_t)(((ql6 >> 2) & 3) | (((qh3 >> 1) & 1) << 2)) - 4;
+            q3_buf[26] = (int8_t)(((ql6 >> 4) & 3) | (((qh3 >> 2) & 1) << 2)) - 4;
+            q3_buf[27] = (int8_t)(((ql6 >> 6) & 3) | (((qh3 >> 3) & 1) << 2)) - 4;
+            q3_buf[28] = (int8_t)(((ql7 >> 0) & 3) | (((qh3 >> 4) & 1) << 2)) - 4;
+            q3_buf[29] = (int8_t)(((ql7 >> 2) & 3) | (((qh3 >> 5) & 1) << 2)) - 4;
+            q3_buf[30] = (int8_t)(((ql7 >> 4) & 3) | (((qh3 >> 6) & 1) << 2)) - 4;
+            q3_buf[31] = (int8_t)(((ql7 >> 6) & 3) | (((qh3 >> 7) & 1) << 2)) - 4;
+
+            const __m256i q3v = _mm256_loadu_si256((const __m256i *)q3_buf);
             const __m256i q8v = _mm256_loadu_si256((const __m256i *)(q8 + j));
 
-            // Bias approach: (q3+4)*q8 - 4*q8 = q3*q8
-            const __m256i q3_biased = _mm256_add_epi8(q3_signed, m4);
-            const __m256i prod_biased = _mm256_maddubs_epi16(q3_biased, q8v);
-            const __m256i correction = _mm256_maddubs_epi16(m4, q8v);
-            const __m256i prod = _mm256_sub_epi16(prod_biased, correction);
+            // (q3+4)*q8 - 4*q8 = q3*q8
+            const __m256i q3_biased = _mm256_add_epi8(q3v, m4);
+            const __m256i prod = _mm256_sub_epi16(
+                _mm256_maddubs_epi16(q3_biased, q8v),
+                _mm256_maddubs_epi16(m4, q8v)
+            );
 
-            const __m256i ones = _mm256_set1_epi16(1);
-            const __m256i sum32 = _mm256_madd_epi16(prod, ones);
-            sumi = _mm256_add_epi32(sumi, sum32);
+            sumi = _mm256_add_epi32(sumi, _mm256_madd_epi16(prod, _mm256_set1_epi16(1)));
         }
 
         // Horizontal sum
@@ -3957,9 +3951,18 @@ void ggml_vec_dot_q3_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const 
         sum128 = _mm_add_epi32(sum128, _mm_srli_si128(sum128, 4));
         const int32_t isum = _mm_cvtsi128_si32(sum128);
 
-        // Step 4: Combine with scaling
-        const float dd = d * d8;
-        sumf += dd * (float)isum + outlier_correction * d8;
+        // Outlier corrections
+        float outlier_correction = 0.0f;
+        for (int k = 0; k < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k) {
+            const int idx = block->outlier_idx[k];
+            const int low = (ql[idx/4] >> ((idx%4)*2)) & 3;
+            const int high = (qh[idx/8] >> (idx%8)) & 1;
+            const int q3_val = (low | (high << 2)) - 4;
+            const float outlier_val = GGML_FP16_TO_FP32(block->outlier_vals[k]);
+            outlier_correction += (outlier_val - q3_val * d) * (float)q8[idx];
+        }
+
+        sumf += d * d8 * (float)isum + outlier_correction * d8;
     }
 
     *s = sumf;

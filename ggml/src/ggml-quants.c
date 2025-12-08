@@ -463,7 +463,7 @@ void quantize_row_q3_hifi_ref(const float * GGML_RESTRICT x, block_q3_hifi * GGM
         const float id = d ? 1.0f / d : 0.0f;
         block->d = d;
 
-        // Pack 3-bit values using Q3_K-style split layout:
+        // Pack 3-bit values using split layout (linear, cache-friendly for scalar):
         // - ql[64]: 256 x 2-bit low bits (4 values per byte)
         // - qh[32]: 256 x 1-bit high bits (8 values per byte)
         memset(block->ql, 0, sizeof(block->ql));
@@ -478,7 +478,7 @@ void quantize_row_q3_hifi_ref(const float * GGML_RESTRICT x, block_q3_hifi * GGM
             const int ql_bit_offset = (i % 4) * 2;
             block->ql[ql_byte_idx] |= ((quant_val & 0x03) << ql_bit_offset);
 
-            // Store high 1 bit in qh (8 values per byte)
+            // Store high 1 bit in qh (8 values per byte, linear)
             const int qh_byte_idx = i / 8;
             const int qh_bit_offset = i % 8;
             block->qh[qh_byte_idx] |= (((quant_val >> 2) & 0x01) << qh_bit_offset);
@@ -539,7 +539,7 @@ static void quantize_row_q3_hifi_impl(const float * GGML_RESTRICT x, block_q3_hi
         const float id = d ? 1.0f / d : 0.0f;
         block->d = d;
 
-        // Pack 3-bit values using Q3_K-style split layout:
+        // Pack 3-bit values using split layout (linear, cache-friendly for scalar):
         // - ql[64]: 256 x 2-bit low bits (4 values per byte)
         // - qh[32]: 256 x 1-bit high bits (8 values per byte)
         memset(block->ql, 0, sizeof(block->ql));
@@ -554,7 +554,7 @@ static void quantize_row_q3_hifi_impl(const float * GGML_RESTRICT x, block_q3_hi
             const int ql_bit_offset = (i % 4) * 2;
             block->ql[ql_byte_idx] |= ((quant_val & 0x03) << ql_bit_offset);
 
-            // Store high 1 bit in qh (8 values per byte)
+            // Store high 1 bit in qh (8 values per byte, linear)
             const int qh_byte_idx = i / 8;
             const int qh_bit_offset = i % 8;
             block->qh[qh_byte_idx] |= (((quant_val >> 2) & 0x01) << qh_bit_offset);
@@ -580,7 +580,7 @@ GGML_API void dequantize_row_q3_hifi(const block_q3_hifi * GGML_RESTRICT x, floa
         const uint8_t * qh = block->qh;
         float * yb = y + ib * Q3_HIFI_BLOCK_SIZE;
 
-        // Dequantize bulk using Q3_K-style split layout
+        // Dequantize bulk using linear split layout
         for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
             // Extract low 2 bits from ql (4 values per byte)
             const int ql_byte_idx = i / 4;

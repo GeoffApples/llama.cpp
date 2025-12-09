@@ -892,11 +892,18 @@ void dequantize_iq4_xs(device const block_iq4_xs * xb, short il, thread type4x4 
 
 template <typename type4x4>
 void dequantize_q3_hifi(device const block_q3_hifi * xb, short il, thread type4x4 & reg) {
-    // il is 0...127 for Q3_HIFI_BLOCK_SIZE = 256 => processes 16 values at a time
+    // il is 0...15 for Q3_HIFI_BLOCK_SIZE = 256 => processes 16 values at a time
     // Each call processes 16 values (4x4 register)
     const float d = xb->d;
-    device const uint8_t * qs = xb->qs;
-    
+    device const uint8_t * ql = xb->ql;  // 64 bytes: 256 x 2-bit low values
+    device const uint8_t * qh = xb->qh;  // 32 bytes: 256 x 1-bit high values
+
+    // Preload outlier indices for faster lookup
+    uint8_t outlier_idx[Q3_HIFI_OUTFIERS_PER_BLOCK];
+    for (int k = 0; k < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k) {
+        outlier_idx[k] = xb->outlier_idx[k];
+    }
+
     // Process 16 values starting at il*16
     for (int i = 0; i < 16; ++i) {
         const int idx = il * 16 + i;
@@ -904,25 +911,26 @@ void dequantize_q3_hifi(device const block_q3_hifi * xb, short il, thread type4x
             reg[i/4][i%4] = 0.0f;
             continue;
         }
-        
-        // Extract 3-bit value
-        const int byte_idx = (idx * 3) / 8;
-        const int bit_offset = (idx * 3) % 8;
-        uint8_t bits = (qs[byte_idx] >> bit_offset) & 7;
-        if (bit_offset > 5 && byte_idx + 1 < 96) {
-            bits |= (qs[byte_idx + 1] << (8 - bit_offset)) & 7;
-        }
-        const int quant_val = (int)bits - 4; // [0,7] → [-4,3]
+
+        // Extract 3-bit value using split ql/qh layout
+        const int ql_byte = idx / 4;
+        const int ql_shift = (idx % 4) * 2;
+        const int qh_byte = idx / 8;
+        const int qh_shift = idx % 8;
+
+        const int low_bits = (ql[ql_byte] >> ql_shift) & 0x03;
+        const int high_bit = (qh[qh_byte] >> qh_shift) & 0x01;
+        const int quant_val = (low_bits | (high_bit << 2)) - 4; // [0,7] → [-4,3]
         float val = quant_val * d;
-        
-        // Check if this index is an outlier
+
+        // Check if this index is an outlier (using preloaded indices)
         for (int k = 0; k < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k) {
-            if (xb->outlier_idx[k] == idx) {
+            if (outlier_idx[k] == idx) {
                 val = half_to_float(xb->outlier_vals[k]);
                 break;
             }
         }
-        
+
         reg[i/4][i%4] = val;
     }
 }

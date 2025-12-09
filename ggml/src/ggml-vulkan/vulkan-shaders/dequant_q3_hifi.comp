@@ -8,50 +8,56 @@ layout (binding = 0) readonly buffer A {A_TYPE data_a[];};
 layout (binding = 1) writeonly buffer D {D_TYPE data_b[];};
 
 void main() {
-    [[unroll]] for (uint wgy = 0; wgy < 256; wgy++) {
-        const uint i = uint(gl_WorkGroupID.x * 256 + wgy);
-        if (i >= p.nel / Q3_HIFI_BLOCK_SIZE) {
-            return;
+    // Each workgroup processes one block
+    const uint block_idx = gl_WorkGroupID.x;
+    if (block_idx >= p.nel / Q3_HIFI_BLOCK_SIZE) {
+        return;
+    }
+
+    // Each thread processes 4 values (64 threads * 4 = 256 values per block)
+    const uint thread_id = gl_LocalInvocationID.x;
+    const uint base_idx = thread_id * 4;
+
+    const FLOAT_TYPE d_all = FLOAT_TYPE(data_a[block_idx].d);
+
+    // Preload outlier indices into registers for faster lookup
+    uint outlier_idx[Q3_HIFI_OUTFIERS_PER_BLOCK];
+    [[unroll]] for (uint k = 0; k < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k) {
+        outlier_idx[k] = data_a[block_idx].outlier_idx[k];
+    }
+
+    // Process 4 values per thread
+    [[unroll]] for (uint l = 0; l < 4; ++l) {
+        const uint idx = base_idx + l;
+        if (idx >= Q3_HIFI_BLOCK_SIZE) {
+            continue;
         }
 
-        const uint r = gl_LocalInvocationID.x / 4;
-        const uint tid = r / 2;
-        const uint is0 = r % 2;
-        const uint l0 = 16 * is0 + 4 * (gl_LocalInvocationID.x % 4);
-        const uint n = tid / 4;
-        const uint j = tid - 4*n;
+        // Extract 3-bit value using split ql/qh layout
+        // ql: 64 bytes, 4 values per byte (2-bit low parts)
+        // qh: 32 bytes, 8 values per byte (1-bit high parts)
+        const uint ql_byte_idx = idx / 4;
+        const uint ql_bit_offset = (idx % 4) * 2;
+        const uint qh_byte_idx = idx / 8;
+        const uint qh_bit_offset = idx % 8;
 
-        const uint y_idx = i * Q3_HIFI_BLOCK_SIZE + 128 * n + 32 * j;
-        const FLOAT_TYPE d_all = FLOAT_TYPE(data_a[i].d);
-        const device uint8_t * qs = data_a[i].qs;
+        const uint low_bits = (data_a[block_idx].ql[ql_byte_idx] >> ql_bit_offset) & 0x03;
+        const uint high_bit = (data_a[block_idx].qh[qh_byte_idx] >> qh_bit_offset) & 0x01;
+        const int quant_val = int(low_bits | (high_bit << 2)) - 4; // [0,7] → [-4,3]
 
-        // Dequantize bulk values
-        for (uint l = l0; l < l0 + 4; ++l) {
-            const uint idx = y_idx + l;
-            if (idx >= Q3_HIFI_BLOCK_SIZE) {
-                continue;
+        FLOAT_TYPE val = FLOAT_TYPE(quant_val) * d_all;
+
+        // Check if this index is an outlier (using preloaded indices)
+        [[unroll]] for (uint k = 0; k < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k) {
+            if (outlier_idx[k] == idx) {
+                // outlier_vals is stored as uint16_t (FP16 bit pattern)
+                // Convert to float using unpackHalf2x16
+                val = FLOAT_TYPE(unpackHalf2x16(uint(data_a[block_idx].outlier_vals[k])).x);
+                break;
             }
-            
-            // Extract 3-bit value
-            const uint byte_idx = (idx * 3) / 8;
-            const uint bit_offset = (idx * 3) % 8;
-            uint8_t bits = (qs[byte_idx] >> bit_offset) & 7;
-            if (bit_offset > 5 && byte_idx + 1 < 96) {
-                bits |= (qs[byte_idx + 1] << (8 - bit_offset)) & 7;
-            }
-            const int quant_val = int(bits) - 4; // [0,7] → [-4,3]
-            FLOAT_TYPE val = FLOAT_TYPE(quant_val) * d_all;
-            
-            // Check if this index is an outlier
-            for (uint k = 0; k < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k) {
-                if (data_a[i].outlier_idx[k] == idx) {
-                    val = FLOAT_TYPE(half_to_float(data_a[i].outlier_vals[k]));
-                    break;
-                }
-            }
-            
-            data_b[y_idx + l] = D_TYPE(val);
         }
+
+        data_b[block_idx * Q3_HIFI_BLOCK_SIZE + idx] = D_TYPE(val);
     }
 }
 

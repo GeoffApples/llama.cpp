@@ -284,6 +284,24 @@ struct block_q3_K_packed16
 #define DATA_A_QUANT_K
 #endif
 
+#define Q3_HIFI_BLOCK_SIZE 256
+#define Q3_HIFI_OUTFIERS_PER_BLOCK 6
+
+struct block_q3_hifi
+{
+    float d;                                         // 4 bytes: scale
+    uint8_t ql[64];                                  // 64 bytes: 256 x 2-bit low values
+    uint8_t qh[32];                                  // 32 bytes: 256 x 1-bit high values
+    uint8_t outlier_idx[Q3_HIFI_OUTFIERS_PER_BLOCK]; // 6 bytes: outlier indices
+    uint16_t outlier_vals[Q3_HIFI_OUTFIERS_PER_BLOCK]; // 12 bytes: FP16 outlier values
+};
+
+#if defined(DATA_A_Q3_HIFI)
+#define QUANT_K Q3_HIFI_BLOCK_SIZE
+#define QUANT_R 1
+#define A_TYPE block_q3_hifi
+#endif
+
 #define QUANT_K_Q4_K 256
 
 struct block_q4_K

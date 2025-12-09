@@ -3818,7 +3818,43 @@ void ggml_vec_dot_iq4_xs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const v
 #endif
 }
 
-// Q3_HIFI vec_dot with Q8_K - AVX2 with unrolled scalar extraction + SIMD dot
+#if defined(__AVX2__)
+// AVX2-optimized dequantization for Q3_HIFI (linear qh layout)
+void dequantize_row_q3_hifi(const block_q3_hifi * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % Q3_HIFI_BLOCK_SIZE == 0);
+    const int64_t nb = k / Q3_HIFI_BLOCK_SIZE;
+
+    for (int ib = 0; ib < nb; ++ib) {
+        const block_q3_hifi * block = &x[ib];
+        const float d = block->d;
+        const uint8_t * ql = block->ql;
+        const uint8_t * qh = block->qh;
+        float * yb = y + ib * Q3_HIFI_BLOCK_SIZE;
+
+        // Dequantize using linear qh layout (8 values per byte)
+        for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
+            const int ql_byte = i / 4;
+            const int ql_shift = (i % 4) * 2;
+            const int low = (ql[ql_byte] >> ql_shift) & 0x03;
+
+            const int qh_byte = i / 8;
+            const int qh_bit = i % 8;
+            const int high = (qh[qh_byte] >> qh_bit) & 0x01;
+
+            const int quant_val = (low | (high << 2)) - 4;
+            yb[i] = quant_val * d;
+        }
+
+        // Restore outliers
+        for (int k_idx = 0; k_idx < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k_idx) {
+            const int idx = block->outlier_idx[k_idx];
+            yb[idx] = GGML_FP16_TO_FP32(block->outlier_vals[k_idx]);
+        }
+    }
+}
+#endif
+
+// Q3_HIFI vec_dot with Q8_K - AVX2 optimized
 void ggml_vec_dot_q3_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % Q3_HIFI_BLOCK_SIZE == 0);
     assert(nrc == 1);
@@ -3847,58 +3883,36 @@ void ggml_vec_dot_q3_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const 
 
         __m256i sumi = _mm256_setzero_si256();
 
-        // Process 32 values at a time with unrolled scalar extraction
+        // Process 32 values at a time
         for (int j = 0; j < Q3_HIFI_BLOCK_SIZE; j += 32) {
+            // Preload bytes for better cache behavior
+            const uint64_t ql64 = *(const uint64_t*)(ql + j/4);
+            const uint32_t qh32 = *(const uint32_t*)(qh + j/8);
+
+            // Extract into buffer - tight loop with register-cached values
             int8_t q3_buf[32];
+            const uint8_t * ql_bytes = (const uint8_t*)&ql64;
+            const uint8_t * qh_bytes = (const uint8_t*)&qh32;
 
-            // Fully unrolled extraction for 32 values using linear layout
-            const uint8_t ql0 = ql[j/4 + 0], ql1 = ql[j/4 + 1];
-            const uint8_t ql2 = ql[j/4 + 2], ql3 = ql[j/4 + 3];
-            const uint8_t ql4 = ql[j/4 + 4], ql5 = ql[j/4 + 5];
-            const uint8_t ql6 = ql[j/4 + 6], ql7 = ql[j/4 + 7];
-            const uint8_t qh0 = qh[j/8 + 0], qh1 = qh[j/8 + 1];
-            const uint8_t qh2 = qh[j/8 + 2], qh3 = qh[j/8 + 3];
+            #define EXTRACT_Q3(idx) \
+                q3_buf[idx] = (int8_t)(((ql_bytes[(idx)/4] >> (((idx)%4)*2)) & 3) | \
+                              (((qh_bytes[(idx)/8] >> ((idx)%8)) & 1) << 2)) - 4
 
-            q3_buf[0]  = (int8_t)(((ql0 >> 0) & 3) | (((qh0 >> 0) & 1) << 2)) - 4;
-            q3_buf[1]  = (int8_t)(((ql0 >> 2) & 3) | (((qh0 >> 1) & 1) << 2)) - 4;
-            q3_buf[2]  = (int8_t)(((ql0 >> 4) & 3) | (((qh0 >> 2) & 1) << 2)) - 4;
-            q3_buf[3]  = (int8_t)(((ql0 >> 6) & 3) | (((qh0 >> 3) & 1) << 2)) - 4;
-            q3_buf[4]  = (int8_t)(((ql1 >> 0) & 3) | (((qh0 >> 4) & 1) << 2)) - 4;
-            q3_buf[5]  = (int8_t)(((ql1 >> 2) & 3) | (((qh0 >> 5) & 1) << 2)) - 4;
-            q3_buf[6]  = (int8_t)(((ql1 >> 4) & 3) | (((qh0 >> 6) & 1) << 2)) - 4;
-            q3_buf[7]  = (int8_t)(((ql1 >> 6) & 3) | (((qh0 >> 7) & 1) << 2)) - 4;
+            EXTRACT_Q3(0);  EXTRACT_Q3(1);  EXTRACT_Q3(2);  EXTRACT_Q3(3);
+            EXTRACT_Q3(4);  EXTRACT_Q3(5);  EXTRACT_Q3(6);  EXTRACT_Q3(7);
+            EXTRACT_Q3(8);  EXTRACT_Q3(9);  EXTRACT_Q3(10); EXTRACT_Q3(11);
+            EXTRACT_Q3(12); EXTRACT_Q3(13); EXTRACT_Q3(14); EXTRACT_Q3(15);
+            EXTRACT_Q3(16); EXTRACT_Q3(17); EXTRACT_Q3(18); EXTRACT_Q3(19);
+            EXTRACT_Q3(20); EXTRACT_Q3(21); EXTRACT_Q3(22); EXTRACT_Q3(23);
+            EXTRACT_Q3(24); EXTRACT_Q3(25); EXTRACT_Q3(26); EXTRACT_Q3(27);
+            EXTRACT_Q3(28); EXTRACT_Q3(29); EXTRACT_Q3(30); EXTRACT_Q3(31);
 
-            q3_buf[8]  = (int8_t)(((ql2 >> 0) & 3) | (((qh1 >> 0) & 1) << 2)) - 4;
-            q3_buf[9]  = (int8_t)(((ql2 >> 2) & 3) | (((qh1 >> 1) & 1) << 2)) - 4;
-            q3_buf[10] = (int8_t)(((ql2 >> 4) & 3) | (((qh1 >> 2) & 1) << 2)) - 4;
-            q3_buf[11] = (int8_t)(((ql2 >> 6) & 3) | (((qh1 >> 3) & 1) << 2)) - 4;
-            q3_buf[12] = (int8_t)(((ql3 >> 0) & 3) | (((qh1 >> 4) & 1) << 2)) - 4;
-            q3_buf[13] = (int8_t)(((ql3 >> 2) & 3) | (((qh1 >> 5) & 1) << 2)) - 4;
-            q3_buf[14] = (int8_t)(((ql3 >> 4) & 3) | (((qh1 >> 6) & 1) << 2)) - 4;
-            q3_buf[15] = (int8_t)(((ql3 >> 6) & 3) | (((qh1 >> 7) & 1) << 2)) - 4;
+            #undef EXTRACT_Q3
 
-            q3_buf[16] = (int8_t)(((ql4 >> 0) & 3) | (((qh2 >> 0) & 1) << 2)) - 4;
-            q3_buf[17] = (int8_t)(((ql4 >> 2) & 3) | (((qh2 >> 1) & 1) << 2)) - 4;
-            q3_buf[18] = (int8_t)(((ql4 >> 4) & 3) | (((qh2 >> 2) & 1) << 2)) - 4;
-            q3_buf[19] = (int8_t)(((ql4 >> 6) & 3) | (((qh2 >> 3) & 1) << 2)) - 4;
-            q3_buf[20] = (int8_t)(((ql5 >> 0) & 3) | (((qh2 >> 4) & 1) << 2)) - 4;
-            q3_buf[21] = (int8_t)(((ql5 >> 2) & 3) | (((qh2 >> 5) & 1) << 2)) - 4;
-            q3_buf[22] = (int8_t)(((ql5 >> 4) & 3) | (((qh2 >> 6) & 1) << 2)) - 4;
-            q3_buf[23] = (int8_t)(((ql5 >> 6) & 3) | (((qh2 >> 7) & 1) << 2)) - 4;
+            const __m256i q3v = _mm256_loadu_si256((const __m256i*)q3_buf);
+            const __m256i q8v = _mm256_loadu_si256((const __m256i*)(q8 + j));
 
-            q3_buf[24] = (int8_t)(((ql6 >> 0) & 3) | (((qh3 >> 0) & 1) << 2)) - 4;
-            q3_buf[25] = (int8_t)(((ql6 >> 2) & 3) | (((qh3 >> 1) & 1) << 2)) - 4;
-            q3_buf[26] = (int8_t)(((ql6 >> 4) & 3) | (((qh3 >> 2) & 1) << 2)) - 4;
-            q3_buf[27] = (int8_t)(((ql6 >> 6) & 3) | (((qh3 >> 3) & 1) << 2)) - 4;
-            q3_buf[28] = (int8_t)(((ql7 >> 0) & 3) | (((qh3 >> 4) & 1) << 2)) - 4;
-            q3_buf[29] = (int8_t)(((ql7 >> 2) & 3) | (((qh3 >> 5) & 1) << 2)) - 4;
-            q3_buf[30] = (int8_t)(((ql7 >> 4) & 3) | (((qh3 >> 6) & 1) << 2)) - 4;
-            q3_buf[31] = (int8_t)(((ql7 >> 6) & 3) | (((qh3 >> 7) & 1) << 2)) - 4;
-
-            const __m256i q3v = _mm256_loadu_si256((const __m256i *)q3_buf);
-            const __m256i q8v = _mm256_loadu_si256((const __m256i *)(q8 + j));
-
-            // (q3+4)*q8 - 4*q8 = q3*q8
+            // (q3+4)*q8 - 4*q8 = q3*q8 (handles signed q3 with unsigned maddubs)
             const __m256i q3_biased = _mm256_add_epi8(q3v, m4);
             const __m256i prod = _mm256_sub_epi16(
                 _mm256_maddubs_epi16(q3_biased, q8v),

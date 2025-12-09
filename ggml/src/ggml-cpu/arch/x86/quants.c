@@ -3929,7 +3929,7 @@ void ggml_vec_dot_q3_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const 
         sum128 = _mm_add_epi32(sum128, _mm_srli_si128(sum128, 4));
         const int32_t isum = _mm_cvtsi128_si32(sum128);
 
-        // Outlier corrections
+        // Outlier corrections - simple loop (6 iterations is small enough)
         float outlier_correction = 0.0f;
         for (int k = 0; k < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k) {
             const int idx = block->outlier_idx[k];

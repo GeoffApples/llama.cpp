@@ -418,6 +418,58 @@ void dequantize_row_q8_0(const block_q8_0 * GGML_RESTRICT x, float * GGML_RESTRI
 // Q3_HIFI: 3-bit quant with 4 FP16 outliers per 256-weight block
 // ===============================================================================================================
 
+// Single-pass top-k selection helper for Q3_HIFI outlier detection
+// Maintains a min-heap of the k largest magnitudes seen so far
+// O(n) with small constant for k=6
+static void q3_hifi_find_top_k_outliers(const float * GGML_RESTRICT xb, int outlier_idx[Q3_HIFI_OUTFIERS_PER_BLOCK], const float * GGML_RESTRICT weights) {
+    // Track top-6 magnitudes and their indices
+    // top_mag[0] is the smallest of the top-6 (min-heap property at root only)
+    float top_mag[Q3_HIFI_OUTFIERS_PER_BLOCK];
+    int   top_idx[Q3_HIFI_OUTFIERS_PER_BLOCK];
+
+    // Initialize with first 6 elements
+    for (int i = 0; i < Q3_HIFI_OUTFIERS_PER_BLOCK; ++i) {
+        top_mag[i] = fabsf(xb[i]) * (weights ? weights[i] : 1.0f);
+        top_idx[i] = i;
+    }
+
+    // Find initial minimum position
+    int min_pos = 0;
+    float min_val = top_mag[0];
+    for (int i = 1; i < Q3_HIFI_OUTFIERS_PER_BLOCK; ++i) {
+        if (top_mag[i] < min_val) {
+            min_val = top_mag[i];
+            min_pos = i;
+        }
+    }
+
+    // Single pass through remaining elements
+    for (int i = Q3_HIFI_OUTFIERS_PER_BLOCK; i < Q3_HIFI_BLOCK_SIZE; ++i) {
+        const float mag = fabsf(xb[i]) * (weights ? weights[i] : 1.0f);
+
+        // If this element is larger than the smallest in our top-6, replace it
+        if (mag > min_val) {
+            top_mag[min_pos] = mag;
+            top_idx[min_pos] = i;
+
+            // Find new minimum
+            min_pos = 0;
+            min_val = top_mag[0];
+            for (int j = 1; j < Q3_HIFI_OUTFIERS_PER_BLOCK; ++j) {
+                if (top_mag[j] < min_val) {
+                    min_val = top_mag[j];
+                    min_pos = j;
+                }
+            }
+        }
+    }
+
+    // Copy results (order doesn't matter for outliers)
+    for (int i = 0; i < Q3_HIFI_OUTFIERS_PER_BLOCK; ++i) {
+        outlier_idx[i] = top_idx[i];
+    }
+}
+
 void quantize_row_q3_hifi_ref(const float * GGML_RESTRICT x, block_q3_hifi * GGML_RESTRICT y, int64_t k) {
     assert(k % Q3_HIFI_BLOCK_SIZE == 0);
     const int64_t nb = k / Q3_HIFI_BLOCK_SIZE;
@@ -426,26 +478,9 @@ void quantize_row_q3_hifi_ref(const float * GGML_RESTRICT x, block_q3_hifi * GGM
         const float * xb = x + ib * Q3_HIFI_BLOCK_SIZE;
         block_q3_hifi * block = &y[ib];
 
-        // --- Find top-k outliers by magnitude ---
-        float mag[Q3_HIFI_BLOCK_SIZE];
-        for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
-            mag[i] = fabsf(xb[i]);
-        }
-
+        // --- Find top-k outliers by magnitude using optimized single-pass algorithm ---
         int outlier_idx[Q3_HIFI_OUTFIERS_PER_BLOCK];
-        for (int k_idx = 0; k_idx < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k_idx) {
-            int argmax = -1;
-            float max_val = -1.0f;
-            for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
-                if (mag[i] > max_val) {
-                    max_val = mag[i];
-                    argmax = i;
-                }
-            }
-            if (argmax == -1) argmax = 0;
-            outlier_idx[k_idx] = argmax;
-            mag[argmax] = -1.0f;  // mask out
-        }
+        q3_hifi_find_top_k_outliers(xb, outlier_idx, NULL);
 
         // --- Quantize bulk (non-outliers) with 3-bit ---
         float tmp[Q3_HIFI_BLOCK_SIZE];
@@ -502,26 +537,9 @@ static void quantize_row_q3_hifi_impl(const float * GGML_RESTRICT x, block_q3_hi
         const float * qw = quant_weights ? quant_weights + ib * Q3_HIFI_BLOCK_SIZE : NULL;
         block_q3_hifi * block = &y[ib];
 
-        // --- Find top-k outliers by magnitude (weighted by quant_weights if available) ---
-        float mag[Q3_HIFI_BLOCK_SIZE];
-        for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
-            mag[i] = fabsf(xb[i]) * (qw ? qw[i] : 1.0f);
-        }
-
+        // --- Find top-k outliers by magnitude using optimized single-pass algorithm ---
         int outlier_idx[Q3_HIFI_OUTFIERS_PER_BLOCK];
-        for (int k_idx = 0; k_idx < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k_idx) {
-            int argmax = -1;
-            float max_val = -1.0f;
-            for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
-                if (mag[i] > max_val) {
-                    max_val = mag[i];
-                    argmax = i;
-                }
-            }
-            if (argmax == -1) argmax = 0;
-            outlier_idx[k_idx] = argmax;
-            mag[argmax] = -1.0f;  // mask out
-        }
+        q3_hifi_find_top_k_outliers(xb, outlier_idx, qw);
 
         // --- Quantize bulk (non-outliers) with 3-bit ---
         float tmp[Q3_HIFI_BLOCK_SIZE];

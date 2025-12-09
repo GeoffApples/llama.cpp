@@ -3929,16 +3929,36 @@ void ggml_vec_dot_q3_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const 
         sum128 = _mm_add_epi32(sum128, _mm_srli_si128(sum128, 4));
         const int32_t isum = _mm_cvtsi128_si32(sum128);
 
-        // Outlier corrections - simple loop (6 iterations is small enough)
-        float outlier_correction = 0.0f;
-        for (int k = 0; k < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k) {
-            const int idx = block->outlier_idx[k];
-            const int low = (ql[idx/4] >> ((idx%4)*2)) & 3;
-            const int high = (qh[idx/8] >> (idx%8)) & 1;
-            const int q3_val = (low | (high << 2)) - 4;
-            const float outlier_val = GGML_FP16_TO_FP32(block->outlier_vals[k]);
-            outlier_correction += (outlier_val - q3_val * d) * (float)q8[idx];
-        }
+        // SIMD outlier corrections - vectorized computation of all 6 corrections
+        // Since outlier positions were zeroed before quantization, q3_val = 0 for all outliers
+        // So correction = outlier_val * q8[idx] (simplified from (outlier_val - 0*d) * q8[idx])
+
+        // Load q8 values at outlier positions and convert to float
+        __m256 q8_outlier = _mm256_setr_ps(
+            (float)q8[block->outlier_idx[0]], (float)q8[block->outlier_idx[1]],
+            (float)q8[block->outlier_idx[2]], (float)q8[block->outlier_idx[3]],
+            (float)q8[block->outlier_idx[4]], (float)q8[block->outlier_idx[5]],
+            0.0f, 0.0f  // Padding (unused lanes)
+        );
+
+        // Load outlier FP16 values and convert to float
+        __m256 outlier_vals = _mm256_setr_ps(
+            GGML_FP16_TO_FP32(block->outlier_vals[0]), GGML_FP16_TO_FP32(block->outlier_vals[1]),
+            GGML_FP16_TO_FP32(block->outlier_vals[2]), GGML_FP16_TO_FP32(block->outlier_vals[3]),
+            GGML_FP16_TO_FP32(block->outlier_vals[4]), GGML_FP16_TO_FP32(block->outlier_vals[5]),
+            0.0f, 0.0f  // Padding
+        );
+
+        // Compute all 6 corrections in parallel: outlier_val * q8[idx]
+        __m256 corrections = _mm256_mul_ps(outlier_vals, q8_outlier);
+
+        // Horizontal sum of 8 elements (last 2 are 0)
+        __m256 sum1 = _mm256_hadd_ps(corrections, corrections);
+        __m256 sum2 = _mm256_hadd_ps(sum1, sum1);
+        __m128 low = _mm256_castps256_ps128(sum2);
+        __m128 high = _mm256_extractf128_ps(sum2, 1);
+        __m128 total = _mm_add_ss(low, high);
+        float outlier_correction = _mm_cvtss_f32(total);
 
         sumf += d * d8 * (float)isum + outlier_correction * d8;
     }

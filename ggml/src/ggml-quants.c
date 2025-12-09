@@ -478,9 +478,26 @@ void quantize_row_q3_hifi_ref(const float * GGML_RESTRICT x, block_q3_hifi * GGM
         const float * xb = x + ib * Q3_HIFI_BLOCK_SIZE;
         block_q3_hifi * block = &y[ib];
 
-        // --- Find top-k outliers by magnitude using optimized single-pass algorithm ---
+        // --- Find top-k outliers by magnitude (original scalar O(n*k) algorithm) ---
+        float mag[Q3_HIFI_BLOCK_SIZE];
+        for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
+            mag[i] = fabsf(xb[i]);
+        }
+
         int outlier_idx[Q3_HIFI_OUTFIERS_PER_BLOCK];
-        q3_hifi_find_top_k_outliers(xb, outlier_idx, NULL);
+        for (int k_idx = 0; k_idx < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k_idx) {
+            int argmax = -1;
+            float max_val = -1.0f;
+            for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
+                if (mag[i] > max_val) {
+                    max_val = mag[i];
+                    argmax = i;
+                }
+            }
+            if (argmax == -1) argmax = 0;
+            outlier_idx[k_idx] = argmax;
+            mag[argmax] = -1.0f;  // mask out
+        }
 
         // --- Quantize bulk (non-outliers) with 3-bit ---
         float tmp[Q3_HIFI_BLOCK_SIZE];
@@ -537,9 +554,26 @@ static void quantize_row_q3_hifi_impl(const float * GGML_RESTRICT x, block_q3_hi
         const float * qw = quant_weights ? quant_weights + ib * Q3_HIFI_BLOCK_SIZE : NULL;
         block_q3_hifi * block = &y[ib];
 
-        // --- Find top-k outliers by magnitude using optimized single-pass algorithm ---
+        // --- Find top-k outliers by magnitude (weighted by quant_weights if available) ---
+        float mag[Q3_HIFI_BLOCK_SIZE];
+        for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
+            mag[i] = fabsf(xb[i]) * (qw ? qw[i] : 1.0f);
+        }
+
         int outlier_idx[Q3_HIFI_OUTFIERS_PER_BLOCK];
-        q3_hifi_find_top_k_outliers(xb, outlier_idx, qw);
+        for (int k_idx = 0; k_idx < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k_idx) {
+            int argmax = -1;
+            float max_val = -1.0f;
+            for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
+                if (mag[i] > max_val) {
+                    max_val = mag[i];
+                    argmax = i;
+                }
+            }
+            if (argmax == -1) argmax = 0;
+            outlier_idx[k_idx] = argmax;
+            mag[argmax] = -1.0f;  // mask out
+        }
 
         // --- Quantize bulk (non-outliers) with 3-bit ---
         float tmp[Q3_HIFI_BLOCK_SIZE];

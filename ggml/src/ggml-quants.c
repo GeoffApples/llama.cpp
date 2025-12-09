@@ -569,6 +569,85 @@ static void quantize_row_q3_hifi_impl(const float * GGML_RESTRICT x, block_q3_hi
     }
 }
 
+// LUT for extracting 4 2-bit values from each ql byte (values are indices 0-3)
+// q3_ql_lut[byte][position] = (byte >> (position*2)) & 3
+static const int8_t q3_ql_lut[256][4] = {
+    #define QL_ROW(b) { ((b)>>0)&3, ((b)>>2)&3, ((b)>>4)&3, ((b)>>6)&3 }
+    QL_ROW(0x00), QL_ROW(0x01), QL_ROW(0x02), QL_ROW(0x03), QL_ROW(0x04), QL_ROW(0x05), QL_ROW(0x06), QL_ROW(0x07),
+    QL_ROW(0x08), QL_ROW(0x09), QL_ROW(0x0a), QL_ROW(0x0b), QL_ROW(0x0c), QL_ROW(0x0d), QL_ROW(0x0e), QL_ROW(0x0f),
+    QL_ROW(0x10), QL_ROW(0x11), QL_ROW(0x12), QL_ROW(0x13), QL_ROW(0x14), QL_ROW(0x15), QL_ROW(0x16), QL_ROW(0x17),
+    QL_ROW(0x18), QL_ROW(0x19), QL_ROW(0x1a), QL_ROW(0x1b), QL_ROW(0x1c), QL_ROW(0x1d), QL_ROW(0x1e), QL_ROW(0x1f),
+    QL_ROW(0x20), QL_ROW(0x21), QL_ROW(0x22), QL_ROW(0x23), QL_ROW(0x24), QL_ROW(0x25), QL_ROW(0x26), QL_ROW(0x27),
+    QL_ROW(0x28), QL_ROW(0x29), QL_ROW(0x2a), QL_ROW(0x2b), QL_ROW(0x2c), QL_ROW(0x2d), QL_ROW(0x2e), QL_ROW(0x2f),
+    QL_ROW(0x30), QL_ROW(0x31), QL_ROW(0x32), QL_ROW(0x33), QL_ROW(0x34), QL_ROW(0x35), QL_ROW(0x36), QL_ROW(0x37),
+    QL_ROW(0x38), QL_ROW(0x39), QL_ROW(0x3a), QL_ROW(0x3b), QL_ROW(0x3c), QL_ROW(0x3d), QL_ROW(0x3e), QL_ROW(0x3f),
+    QL_ROW(0x40), QL_ROW(0x41), QL_ROW(0x42), QL_ROW(0x43), QL_ROW(0x44), QL_ROW(0x45), QL_ROW(0x46), QL_ROW(0x47),
+    QL_ROW(0x48), QL_ROW(0x49), QL_ROW(0x4a), QL_ROW(0x4b), QL_ROW(0x4c), QL_ROW(0x4d), QL_ROW(0x4e), QL_ROW(0x4f),
+    QL_ROW(0x50), QL_ROW(0x51), QL_ROW(0x52), QL_ROW(0x53), QL_ROW(0x54), QL_ROW(0x55), QL_ROW(0x56), QL_ROW(0x57),
+    QL_ROW(0x58), QL_ROW(0x59), QL_ROW(0x5a), QL_ROW(0x5b), QL_ROW(0x5c), QL_ROW(0x5d), QL_ROW(0x5e), QL_ROW(0x5f),
+    QL_ROW(0x60), QL_ROW(0x61), QL_ROW(0x62), QL_ROW(0x63), QL_ROW(0x64), QL_ROW(0x65), QL_ROW(0x66), QL_ROW(0x67),
+    QL_ROW(0x68), QL_ROW(0x69), QL_ROW(0x6a), QL_ROW(0x6b), QL_ROW(0x6c), QL_ROW(0x6d), QL_ROW(0x6e), QL_ROW(0x6f),
+    QL_ROW(0x70), QL_ROW(0x71), QL_ROW(0x72), QL_ROW(0x73), QL_ROW(0x74), QL_ROW(0x75), QL_ROW(0x76), QL_ROW(0x77),
+    QL_ROW(0x78), QL_ROW(0x79), QL_ROW(0x7a), QL_ROW(0x7b), QL_ROW(0x7c), QL_ROW(0x7d), QL_ROW(0x7e), QL_ROW(0x7f),
+    QL_ROW(0x80), QL_ROW(0x81), QL_ROW(0x82), QL_ROW(0x83), QL_ROW(0x84), QL_ROW(0x85), QL_ROW(0x86), QL_ROW(0x87),
+    QL_ROW(0x88), QL_ROW(0x89), QL_ROW(0x8a), QL_ROW(0x8b), QL_ROW(0x8c), QL_ROW(0x8d), QL_ROW(0x8e), QL_ROW(0x8f),
+    QL_ROW(0x90), QL_ROW(0x91), QL_ROW(0x92), QL_ROW(0x93), QL_ROW(0x94), QL_ROW(0x95), QL_ROW(0x96), QL_ROW(0x97),
+    QL_ROW(0x98), QL_ROW(0x99), QL_ROW(0x9a), QL_ROW(0x9b), QL_ROW(0x9c), QL_ROW(0x9d), QL_ROW(0x9e), QL_ROW(0x9f),
+    QL_ROW(0xa0), QL_ROW(0xa1), QL_ROW(0xa2), QL_ROW(0xa3), QL_ROW(0xa4), QL_ROW(0xa5), QL_ROW(0xa6), QL_ROW(0xa7),
+    QL_ROW(0xa8), QL_ROW(0xa9), QL_ROW(0xaa), QL_ROW(0xab), QL_ROW(0xac), QL_ROW(0xad), QL_ROW(0xae), QL_ROW(0xaf),
+    QL_ROW(0xb0), QL_ROW(0xb1), QL_ROW(0xb2), QL_ROW(0xb3), QL_ROW(0xb4), QL_ROW(0xb5), QL_ROW(0xb6), QL_ROW(0xb7),
+    QL_ROW(0xb8), QL_ROW(0xb9), QL_ROW(0xba), QL_ROW(0xbb), QL_ROW(0xbc), QL_ROW(0xbd), QL_ROW(0xbe), QL_ROW(0xbf),
+    QL_ROW(0xc0), QL_ROW(0xc1), QL_ROW(0xc2), QL_ROW(0xc3), QL_ROW(0xc4), QL_ROW(0xc5), QL_ROW(0xc6), QL_ROW(0xc7),
+    QL_ROW(0xc8), QL_ROW(0xc9), QL_ROW(0xca), QL_ROW(0xcb), QL_ROW(0xcc), QL_ROW(0xcd), QL_ROW(0xce), QL_ROW(0xcf),
+    QL_ROW(0xd0), QL_ROW(0xd1), QL_ROW(0xd2), QL_ROW(0xd3), QL_ROW(0xd4), QL_ROW(0xd5), QL_ROW(0xd6), QL_ROW(0xd7),
+    QL_ROW(0xd8), QL_ROW(0xd9), QL_ROW(0xda), QL_ROW(0xdb), QL_ROW(0xdc), QL_ROW(0xdd), QL_ROW(0xde), QL_ROW(0xdf),
+    QL_ROW(0xe0), QL_ROW(0xe1), QL_ROW(0xe2), QL_ROW(0xe3), QL_ROW(0xe4), QL_ROW(0xe5), QL_ROW(0xe6), QL_ROW(0xe7),
+    QL_ROW(0xe8), QL_ROW(0xe9), QL_ROW(0xea), QL_ROW(0xeb), QL_ROW(0xec), QL_ROW(0xed), QL_ROW(0xee), QL_ROW(0xef),
+    QL_ROW(0xf0), QL_ROW(0xf1), QL_ROW(0xf2), QL_ROW(0xf3), QL_ROW(0xf4), QL_ROW(0xf5), QL_ROW(0xf6), QL_ROW(0xf7),
+    QL_ROW(0xf8), QL_ROW(0xf9), QL_ROW(0xfa), QL_ROW(0xfb), QL_ROW(0xfc), QL_ROW(0xfd), QL_ROW(0xfe), QL_ROW(0xff),
+    #undef QL_ROW
+};
+
+// LUT for extracting 8 1-bit values from each qh byte (values are 0 or 4, pre-shifted for OR)
+// q3_qh_lut[byte][position] = ((byte >> position) & 1) << 2
+static const int8_t q3_qh_lut[256][8] = {
+    #define QH_ROW(b) { (((b)>>0)&1)<<2, (((b)>>1)&1)<<2, (((b)>>2)&1)<<2, (((b)>>3)&1)<<2, \
+                        (((b)>>4)&1)<<2, (((b)>>5)&1)<<2, (((b)>>6)&1)<<2, (((b)>>7)&1)<<2 }
+    QH_ROW(0x00), QH_ROW(0x01), QH_ROW(0x02), QH_ROW(0x03), QH_ROW(0x04), QH_ROW(0x05), QH_ROW(0x06), QH_ROW(0x07),
+    QH_ROW(0x08), QH_ROW(0x09), QH_ROW(0x0a), QH_ROW(0x0b), QH_ROW(0x0c), QH_ROW(0x0d), QH_ROW(0x0e), QH_ROW(0x0f),
+    QH_ROW(0x10), QH_ROW(0x11), QH_ROW(0x12), QH_ROW(0x13), QH_ROW(0x14), QH_ROW(0x15), QH_ROW(0x16), QH_ROW(0x17),
+    QH_ROW(0x18), QH_ROW(0x19), QH_ROW(0x1a), QH_ROW(0x1b), QH_ROW(0x1c), QH_ROW(0x1d), QH_ROW(0x1e), QH_ROW(0x1f),
+    QH_ROW(0x20), QH_ROW(0x21), QH_ROW(0x22), QH_ROW(0x23), QH_ROW(0x24), QH_ROW(0x25), QH_ROW(0x26), QH_ROW(0x27),
+    QH_ROW(0x28), QH_ROW(0x29), QH_ROW(0x2a), QH_ROW(0x2b), QH_ROW(0x2c), QH_ROW(0x2d), QH_ROW(0x2e), QH_ROW(0x2f),
+    QH_ROW(0x30), QH_ROW(0x31), QH_ROW(0x32), QH_ROW(0x33), QH_ROW(0x34), QH_ROW(0x35), QH_ROW(0x36), QH_ROW(0x37),
+    QH_ROW(0x38), QH_ROW(0x39), QH_ROW(0x3a), QH_ROW(0x3b), QH_ROW(0x3c), QH_ROW(0x3d), QH_ROW(0x3e), QH_ROW(0x3f),
+    QH_ROW(0x40), QH_ROW(0x41), QH_ROW(0x42), QH_ROW(0x43), QH_ROW(0x44), QH_ROW(0x45), QH_ROW(0x46), QH_ROW(0x47),
+    QH_ROW(0x48), QH_ROW(0x49), QH_ROW(0x4a), QH_ROW(0x4b), QH_ROW(0x4c), QH_ROW(0x4d), QH_ROW(0x4e), QH_ROW(0x4f),
+    QH_ROW(0x50), QH_ROW(0x51), QH_ROW(0x52), QH_ROW(0x53), QH_ROW(0x54), QH_ROW(0x55), QH_ROW(0x56), QH_ROW(0x57),
+    QH_ROW(0x58), QH_ROW(0x59), QH_ROW(0x5a), QH_ROW(0x5b), QH_ROW(0x5c), QH_ROW(0x5d), QH_ROW(0x5e), QH_ROW(0x5f),
+    QH_ROW(0x60), QH_ROW(0x61), QH_ROW(0x62), QH_ROW(0x63), QH_ROW(0x64), QH_ROW(0x65), QH_ROW(0x66), QH_ROW(0x67),
+    QH_ROW(0x68), QH_ROW(0x69), QH_ROW(0x6a), QH_ROW(0x6b), QH_ROW(0x6c), QH_ROW(0x6d), QH_ROW(0x6e), QH_ROW(0x6f),
+    QH_ROW(0x70), QH_ROW(0x71), QH_ROW(0x72), QH_ROW(0x73), QH_ROW(0x74), QH_ROW(0x75), QH_ROW(0x76), QH_ROW(0x77),
+    QH_ROW(0x78), QH_ROW(0x79), QH_ROW(0x7a), QH_ROW(0x7b), QH_ROW(0x7c), QH_ROW(0x7d), QH_ROW(0x7e), QH_ROW(0x7f),
+    QH_ROW(0x80), QH_ROW(0x81), QH_ROW(0x82), QH_ROW(0x83), QH_ROW(0x84), QH_ROW(0x85), QH_ROW(0x86), QH_ROW(0x87),
+    QH_ROW(0x88), QH_ROW(0x89), QH_ROW(0x8a), QH_ROW(0x8b), QH_ROW(0x8c), QH_ROW(0x8d), QH_ROW(0x8e), QH_ROW(0x8f),
+    QH_ROW(0x90), QH_ROW(0x91), QH_ROW(0x92), QH_ROW(0x93), QH_ROW(0x94), QH_ROW(0x95), QH_ROW(0x96), QH_ROW(0x97),
+    QH_ROW(0x98), QH_ROW(0x99), QH_ROW(0x9a), QH_ROW(0x9b), QH_ROW(0x9c), QH_ROW(0x9d), QH_ROW(0x9e), QH_ROW(0x9f),
+    QH_ROW(0xa0), QH_ROW(0xa1), QH_ROW(0xa2), QH_ROW(0xa3), QH_ROW(0xa4), QH_ROW(0xa5), QH_ROW(0xa6), QH_ROW(0xa7),
+    QH_ROW(0xa8), QH_ROW(0xa9), QH_ROW(0xaa), QH_ROW(0xab), QH_ROW(0xac), QH_ROW(0xad), QH_ROW(0xae), QH_ROW(0xaf),
+    QH_ROW(0xb0), QH_ROW(0xb1), QH_ROW(0xb2), QH_ROW(0xb3), QH_ROW(0xb4), QH_ROW(0xb5), QH_ROW(0xb6), QH_ROW(0xb7),
+    QH_ROW(0xb8), QH_ROW(0xb9), QH_ROW(0xba), QH_ROW(0xbb), QH_ROW(0xbc), QH_ROW(0xbd), QH_ROW(0xbe), QH_ROW(0xbf),
+    QH_ROW(0xc0), QH_ROW(0xc1), QH_ROW(0xc2), QH_ROW(0xc3), QH_ROW(0xc4), QH_ROW(0xc5), QH_ROW(0xc6), QH_ROW(0xc7),
+    QH_ROW(0xc8), QH_ROW(0xc9), QH_ROW(0xca), QH_ROW(0xcb), QH_ROW(0xcc), QH_ROW(0xcd), QH_ROW(0xce), QH_ROW(0xcf),
+    QH_ROW(0xd0), QH_ROW(0xd1), QH_ROW(0xd2), QH_ROW(0xd3), QH_ROW(0xd4), QH_ROW(0xd5), QH_ROW(0xd6), QH_ROW(0xd7),
+    QH_ROW(0xd8), QH_ROW(0xd9), QH_ROW(0xda), QH_ROW(0xdb), QH_ROW(0xdc), QH_ROW(0xdd), QH_ROW(0xde), QH_ROW(0xdf),
+    QH_ROW(0xe0), QH_ROW(0xe1), QH_ROW(0xe2), QH_ROW(0xe3), QH_ROW(0xe4), QH_ROW(0xe5), QH_ROW(0xe6), QH_ROW(0xe7),
+    QH_ROW(0xe8), QH_ROW(0xe9), QH_ROW(0xea), QH_ROW(0xeb), QH_ROW(0xec), QH_ROW(0xed), QH_ROW(0xee), QH_ROW(0xef),
+    QH_ROW(0xf0), QH_ROW(0xf1), QH_ROW(0xf2), QH_ROW(0xf3), QH_ROW(0xf4), QH_ROW(0xf5), QH_ROW(0xf6), QH_ROW(0xf7),
+    QH_ROW(0xf8), QH_ROW(0xf9), QH_ROW(0xfa), QH_ROW(0xfb), QH_ROW(0xfc), QH_ROW(0xfd), QH_ROW(0xfe), QH_ROW(0xff),
+    #undef QH_ROW
+};
+
 GGML_API void dequantize_row_q3_hifi(const block_q3_hifi * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % Q3_HIFI_BLOCK_SIZE == 0);
     const int64_t nb = k / Q3_HIFI_BLOCK_SIZE;
@@ -580,21 +659,30 @@ GGML_API void dequantize_row_q3_hifi(const block_q3_hifi * GGML_RESTRICT x, floa
         const uint8_t * qh = block->qh;
         float * yb = y + ib * Q3_HIFI_BLOCK_SIZE;
 
-        // Dequantize bulk using linear split layout
-        for (int i = 0; i < Q3_HIFI_BLOCK_SIZE; ++i) {
-            // Extract low 2 bits from ql (4 values per byte)
-            const int ql_byte_idx = i / 4;
-            const int ql_bit_offset = (i % 4) * 2;
-            const int low_bits = (ql[ql_byte_idx] >> ql_bit_offset) & 0x03;
+        // Dequantize using LUT - process 8 values at a time (1 qh byte, 2 ql bytes)
+        for (int i = 0; i < 32; ++i) {
+            // Each iteration processes 8 values
+            const int base = i * 8;
+            const uint8_t qh_byte = qh[i];
+            const uint8_t ql_byte0 = ql[i*2 + 0];
+            const uint8_t ql_byte1 = ql[i*2 + 1];
 
-            // Extract high 1 bit from qh (8 values per byte)
-            const int qh_byte_idx = i / 8;
-            const int qh_bit_offset = i % 8;
-            const int high_bit = (qh[qh_byte_idx] >> qh_bit_offset) & 0x01;
+            // Get the 8 high bit contributions (0 or 4)
+            const int8_t * qh_vals = q3_qh_lut[qh_byte];
 
-            // Combine: value = low_bits | (high_bit << 2)
-            const int quant_val = low_bits | (high_bit << 2);
-            yb[i] = ((int)quant_val - 4) * d; // [0,7] → [-4,3]
+            // Get the 4+4 low bit values (0-3)
+            const int8_t * ql_vals0 = q3_ql_lut[ql_byte0];
+            const int8_t * ql_vals1 = q3_ql_lut[ql_byte1];
+
+            // Combine and convert to float: (low | high) - 4
+            yb[base + 0] = ((ql_vals0[0] | qh_vals[0]) - 4) * d;
+            yb[base + 1] = ((ql_vals0[1] | qh_vals[1]) - 4) * d;
+            yb[base + 2] = ((ql_vals0[2] | qh_vals[2]) - 4) * d;
+            yb[base + 3] = ((ql_vals0[3] | qh_vals[3]) - 4) * d;
+            yb[base + 4] = ((ql_vals1[0] | qh_vals[4]) - 4) * d;
+            yb[base + 5] = ((ql_vals1[1] | qh_vals[5]) - 4) * d;
+            yb[base + 6] = ((ql_vals1[2] | qh_vals[6]) - 4) * d;
+            yb[base + 7] = ((ql_vals1[3] | qh_vals[7]) - 4) * d;
         }
 
         // Restore outliers

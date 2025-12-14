@@ -1,37 +1,40 @@
-# Q3_HIFI Quantization: Final Results
+# Q3_HIFI Quantization: Development Log & Results
 
 ## 🏆 Executive Summary
 
-**Q3_HIFI_A v2 beats Q3_K_M in ALL THREE metrics: smaller, faster, AND better quality!**
+**Q3_HIFI** is an adaptive 3-bit quantization format that preserves 8 critical weights per block in FP16 ("outliers") to maintain model quality.
 
-Q3_HIFI is a novel 3-bit quantization format that preserves 8 critical weights per block in FP16 ("outliers") to maintain model quality. After extensive optimization and benchmarking:
+> **Important**: The CLI name is simply `Q3_HIFI` - it automatically uses the adaptive strategy internally. There is no separate "Q3_HIFI_A" command.
 
-| Metric | Q3_HIFI_A v2 | Q3_K_M | Winner |
-|:-------|-------------:|-------:|:-------|
-| **Size** | 993.50 MiB | 1017.85 MiB | ✅ **Q3_HIFI_A** (-2.4%) |
-| **Speed** | 28.35 t/s | 26.65 t/s | ✅ **Q3_HIFI_A** (+6.4%) |
-| **PPL** | 17.66 | 17.69 | ✅ **Q3_HIFI_A** (better!) |
+### Latest Results (Qwen3-1.7B, CPU-only)
 
-**Recommendation: Use Q3_HIFI_A instead of Q3_K_M for 3-bit quantization.**
+| Metric | Q3_HIFI | Q3_K_M | Comparison |
+|:-------|--------:|-------:|:-----------|
+| **Size** | 993 MiB | 1018 MiB | **-25 MiB** ✅ |
+| **Speed** | 26.85 t/s | 27.16 t/s | -1.1% (within margin) |
+| **PPL** | 18.12 | 17.69 | +2.4% (slightly worse) |
+
+**Verdict**: Q3_HIFI offers meaningful size reduction with minimal quality/speed tradeoff.
 
 ---
 
-## Final Benchmark Results (Qwen3-1.7B on WikiText-2)
+## Benchmark Results (Qwen3-1.7B on WikiText-2)
 
-| Model | Size | BPW | PPL ↓ | Speed (t/s) ↑ | Verdict |
-|:------|-----:|----:|------:|-------------:|:--------|
-| **Q3_K_S** | 948.91 MiB | 3.92 | 24.15 | 30.79 | Fastest, worst quality |
-| **Q3_HIFI_A v2** | **993.50 MiB** | **4.10** | **17.66** | **28.35** | **🏆 BEST OVERALL** |
-| **Q3_K_M** | 1017.85 MiB | 4.20 | 17.69 | 26.65 | Former champion |
-| Q3_HIFI (uniform) | ~1100 MiB | 4.5 | 18.20 | 26.8 | Deprecated |
+| Model | Size | BPW | PPL ↓ | Speed (t/s) ↑ | Notes |
+|:------|-----:|----:|------:|-------------:|:------|
+| **Q3_K_S** | 948.91 MiB | 3.92 | ~24 | 32.37 | Fastest, worst quality |
+| **Q3_HIFI** | **993 MiB** | **4.10** | **18.12** | **26.85** | **25 MiB smaller than Q3_K_M** |
+| **Q3_K_M** | 1017.85 MiB | 4.20 | 17.69 | 27.16 | Established baseline |
 
-### Tensor Distribution (Q3_HIFI_A v2)
+### Tensor Distribution (Q3_HIFI)
+
+When you quantize with `Q3_HIFI`, it automatically uses adaptive routing:
 
 ```
 llama_model_loader: - type  f32:     113 tensors
-llama_model_loader: - type Q3_HIFI:   37 tensors  (highest sensitivity - ALL attn_v + early ffn_down)
+llama_model_loader: - type Q3_HIFI:   37 tensors  (ALL attn_v + first 1/3 ffn_down)
 llama_model_loader: - type q3_K:     123 tensors  (default base)
-llama_model_loader: - type q4_K:      37 tensors  (medium sensitivity)
+llama_model_loader: - type q4_K:      37 tensors  (attn_qkv, attn_output)
 llama_model_loader: - type q6_K:       1 tensors  (output)
 ```
 
@@ -69,7 +72,7 @@ llama_model_loader: - type q6_K:       1 tensors  (output)
 | Metal support | ✅ Done | Full GPU support on Apple |
 | SYCL support | ✅ Done | Intel Arc GPU support |
 | Vulkan dequant | ✅ Done | Basic GPU support |
-| Vulkan vec_dot | ⚠️ Partial | Simplified shader (no outlier correction) |
+| Vulkan vec_dot | ⚠️ Fallback | Uses dequant+matmul path (stable but slower) |
 | Python tooling | ✅ Done | gguf-py + convert_hf_to_gguf.py |
 | **Q3_HIFI_A v2** | ✅ Done | **Beats Q3_K_M in all metrics!** |
 
@@ -80,10 +83,9 @@ llama_model_loader: - type q6_K:       1 tensors  (output)
 | `LLAMA_FTYPE_MOSTLY_Q3_HIFI` | `Q3_HIFI` | Uniform Q3_HIFI on all tensors (~4.5 bpw) |
 | `LLAMA_FTYPE_MOSTLY_Q3_HIFI_A` | `Q3_HIFI_A` | **Recommended**: Adaptive routing (~4.1 bpw) |
 
-### ❌ Known Issues
+### ⚠️ Known Issues
 
-1. **Vulkan graph splits**: Custom mul_mat_vec shader has issues; uses simplified version
-2. **GPU quality on Vulkan**: Skips outlier correction for stability (use CPU or CUDA for best quality)
+1. **Vulkan performance**: Q3_HIFI uses dequant+matmul fallback path on Vulkan (no dedicated mul_mat_vec shader). Performance may be slower than CPU for small batch sizes. For best performance, use CPU (`-ngl 0`), CUDA, or Metal.
 
 ---
 
@@ -209,10 +211,10 @@ Q3_HIFI_A v2 = Q3_K base
 
 ## Future Work (Optional)
 
-1. **Fix Vulkan mul_mat_vec shader** - Enable full outlier correction on Vulkan
-2. **Validate on larger models** - Test on Mistral-7B, Llama-3-8B, Qwen2-7B
-3. **Upstream to llama.cpp** - Submit PR to main repository
-4. **Per-tensor outlier budget** - Experiment with 10-12 outliers on most critical tensors
+1. **Validate on larger models** - Test on Mistral-7B, Llama-3-8B, Qwen2-7B
+2. **Upstream to llama.cpp** - Submit PR to main repository
+3. **Per-tensor outlier budget** - Experiment with 10-12 outliers on most critical tensors
+4. **Test Vulkan stability** - Verify outlier correction shader works across different GPU vendors
 
 ---
 

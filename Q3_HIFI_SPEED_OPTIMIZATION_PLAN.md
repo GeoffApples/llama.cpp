@@ -750,6 +750,7 @@ typedef struct {
 | `ggml/src/ggml-cpu/ops.cpp` | Operation handlers |
 | `tools/quantize/quantize.cpp` | CLI support |
 | `src/llama-quant.cpp` | Ftype mapping |
+| `ggml/src/ggml-cpu/arch/arm/quants.c` | **ARM NEON optimized vec_dot** |
 
 ### Critical Bug Fix
 
@@ -794,4 +795,96 @@ llama-bench -m output.gguf -t 4 -p 0 -n 20
 3. **For maximum speed**: Use Q3_K_M (PPL 20.2, 100% speed)
 
 The **Hybrid approach** is recommended for most users - it delivers 20% better quality than Q3_K_M while maintaining 91% of its speed and being smaller.
+
+### Platform Support
+
+| Platform | Status | Implementation |
+|----------|--------|----------------|
+| **x86/x64 (Intel/AMD) AVX2** | ✅ Optimized | `arch/x86/quants.c` |
+| **ARM NEON (Apple M1/M2, etc.)** | ✅ Optimized | `arch/arm/quants.c` |
+| **Other CPU architectures** | ✅ Works | Generic scalar fallback |
+| **Metal (Apple GPU)** | ❌ Not implemented | Would need shader |
+| **CUDA (NVIDIA GPU)** | ❌ Not implemented | Would need kernel |
+| **Vulkan (cross-platform GPU)** | ❌ Not implemented | Would need shader |
+
+---
+
+## Additional Optimization Attempts (2025-12-11)
+
+### Attempted: Activation-Aware Sparse Skipping ❌ FAILED
+
+**Concept:** Skip outlier correction when the Q8 activation value is near zero.
+
+```c
+// Attempted implementation
+if (abs(activation) > 4) {  // Only apply if |a| > 0.03
+    sumf += outlier_val * activation * d_y;
+}
+```
+
+**Result:** Speed **decreased by ~20%** (from 19 → 15 tok/s)
+
+**Why it failed:**
+- Branch misprediction penalty outweighed any savings
+- CPU pipeline stalls on unpredictable branches
+- Only 6 outliers per block - not enough iterations to amortize branch cost
+
+**Lesson learned:** For very short loops (6 iterations), branchless code is always faster.
+
+---
+
+### Applied: Loop Unrolling ✅ MODEST SUCCESS
+
+**Concept:** Fully unroll the 6-iteration outlier loop to eliminate loop overhead.
+
+```c
+// Before: Loop with overhead
+for (int k = 0; k < 6; ++k) {
+    sumf += GGML_FP16_TO_FP32(vals[k]) * q8[idx[k]] * d_y;
+}
+
+// After: Fully unrolled
+sumf += GGML_FP16_TO_FP32(vals[0]) * q8[idx[0]] * d_y;
+sumf += GGML_FP16_TO_FP32(vals[1]) * q8[idx[1]] * d_y;
+sumf += GGML_FP16_TO_FP32(vals[2]) * q8[idx[2]] * d_y;
+sumf += GGML_FP16_TO_FP32(vals[3]) * q8[idx[3]] * d_y;
+sumf += GGML_FP16_TO_FP32(vals[4]) * q8[idx[4]] * d_y;
+sumf += GGML_FP16_TO_FP32(vals[5]) * q8[idx[5]] * d_y;
+```
+
+**Result:** ~6% speed improvement (18.3 → 19.4 tok/s)
+
+**Why it works:**
+- Eliminates loop counter updates and branch checks
+- Allows better instruction scheduling
+- Compiler can optimize more aggressively
+
+---
+
+### Not Attempted: Options 2 and 3
+
+**Option 2: Learned Outlier Prediction**
+- Requires training a per-layer predictor
+- High implementation complexity
+- Marginal expected benefit for 6 outliers
+
+**Option 3: GPU-CPU Hybrid Offload**
+- Only benefits prompt processing (not token generation)
+- Requires significant architectural changes
+- Complex to implement correctly
+
+---
+
+## Final Performance Summary
+
+| Format | Speed | PPL | Size | vs Q3_K_M |
+|--------|-------|-----|------|-----------|
+| Q3_K_M | 21.4 tok/s | 17.69 | 1018 MiB | baseline |
+| Q3_HIFI_HYBRID | 19.4 tok/s | 18.21 | 991 MiB | 91% speed, 97% quality |
+| Q3_K_S | 24.2 tok/s | 24.15 | 949 MiB | 113% speed, 63% quality |
+
+**Conclusion:** The Q3_HIFI_HYBRID format has reached near-optimal performance. Further speedups would require:
+1. SIMD outlier correction (complex for random-access pattern)
+2. Reducing outlier count (would hurt quality)
+3. GPU implementation (requires shader/kernel development)
 

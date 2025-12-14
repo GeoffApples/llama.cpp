@@ -167,7 +167,7 @@ float16_t dequantFuncQ3_K(const in decodeBufQ3_K bl, const in uint blockCoords[2
     return ret;
 }
 
-// Q3_HIFI: Q3_K-compatible layout with 6 FP16 outliers
+// Q3_HIFI: Q3_K-compatible layout with 8 FP16 outliers
 layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufQ3_HIFI {
    block_q3_hifi block;
 };

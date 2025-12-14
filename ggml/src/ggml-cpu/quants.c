@@ -623,19 +623,33 @@ void ggml_vec_dot_q3_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs
 
         total_sum += d * (float)sumi;
 
-        // Add outlier corrections - fully unrolled for 8 outliers
+        // Add outlier corrections - optimized: factor out yd, pre-load FP16
         const float yd = yb->d;
         const uint8_t * GGML_RESTRICT o_idx = xb->outlier_idx;
         const ggml_fp16_t * GGML_RESTRICT o_vals = xb->outlier_vals;
-        
-        total_sum += GGML_FP16_TO_FP32(o_vals[0]) * yb->qs[o_idx[0]] * yd;
-        total_sum += GGML_FP16_TO_FP32(o_vals[1]) * yb->qs[o_idx[1]] * yd;
-        total_sum += GGML_FP16_TO_FP32(o_vals[2]) * yb->qs[o_idx[2]] * yd;
-        total_sum += GGML_FP16_TO_FP32(o_vals[3]) * yb->qs[o_idx[3]] * yd;
-        total_sum += GGML_FP16_TO_FP32(o_vals[4]) * yb->qs[o_idx[4]] * yd;
-        total_sum += GGML_FP16_TO_FP32(o_vals[5]) * yb->qs[o_idx[5]] * yd;
-        total_sum += GGML_FP16_TO_FP32(o_vals[6]) * yb->qs[o_idx[6]] * yd;
-        total_sum += GGML_FP16_TO_FP32(o_vals[7]) * yb->qs[o_idx[7]] * yd;
+        const int8_t * GGML_RESTRICT q8_base = yb->qs;
+
+        // Pre-load and convert FP16 values (better instruction pipelining)
+        const float v0 = GGML_FP16_TO_FP32(o_vals[0]);
+        const float v1 = GGML_FP16_TO_FP32(o_vals[1]);
+        const float v2 = GGML_FP16_TO_FP32(o_vals[2]);
+        const float v3 = GGML_FP16_TO_FP32(o_vals[3]);
+        const float v4 = GGML_FP16_TO_FP32(o_vals[4]);
+        const float v5 = GGML_FP16_TO_FP32(o_vals[5]);
+        const float v6 = GGML_FP16_TO_FP32(o_vals[6]);
+        const float v7 = GGML_FP16_TO_FP32(o_vals[7]);
+
+        // Accumulate without yd, then single multiply
+        float block_outlier = v0 * (float)q8_base[o_idx[0]]
+                            + v1 * (float)q8_base[o_idx[1]]
+                            + v2 * (float)q8_base[o_idx[2]]
+                            + v3 * (float)q8_base[o_idx[3]]
+                            + v4 * (float)q8_base[o_idx[4]]
+                            + v5 * (float)q8_base[o_idx[5]]
+                            + v6 * (float)q8_base[o_idx[6]]
+                            + v7 * (float)q8_base[o_idx[7]];
+
+        total_sum += block_outlier * yd;  // Single multiply
     }
 
     *s = total_sum;

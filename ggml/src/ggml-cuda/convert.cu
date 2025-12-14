@@ -518,7 +518,7 @@ static void dequantize_row_q3_K_cuda(const void * vx, dst_t * y, const int64_t k
     dequantize_block_q3_K<<<nb, 64, 0, stream>>>(vx, y);
 }
 
-// Q3_HIFI: Q3_K-compatible layout with 6 FP16 outliers per block
+// Q3_HIFI: Q3_K-compatible layout with 8 FP16 outliers per block
 // Uses Q3_K dequantization for bulk, then overwrites outlier positions
 template<typename dst_t>
 static __global__ void dequantize_block_q3_hifi(const void * __restrict__ vx, dst_t * __restrict__ yy) {

@@ -715,7 +715,7 @@ static void mul_mat_vec_q3_K_q8_1_sycl(const void *vx, const void *vy,
     }
 }
 
-// Q3_HIFI: Q3_K-compatible layout with 6 FP16 outliers
+// Q3_HIFI: Q3_K-compatible layout with 8 FP16 outliers
 static void mul_mat_vec_q3_hifi_q8_1_sycl(const void *vx, const void *vy,
                                           float *dst, const int ncols,
                                           const int nrows,

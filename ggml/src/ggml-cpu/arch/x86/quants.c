@@ -2333,6 +2333,7 @@ void ggml_vec_dot_q6_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
 
 // Q3_HIFI vec_dot - AVX2 optimized implementation
 // Copied from Q3_K AVX2 kernel and adapted for block_q3_hifi + outlier correction
+// OPTIMIZATION: Outlier corrections fused into main loop for better cache locality
 void ggml_vec_dot_q3_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % QK_K == 0);
     assert(nrc == 1);
@@ -2357,6 +2358,7 @@ void ggml_vec_dot_q3_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const 
     const __m128i m32 = _mm_set1_epi8(32);
 
     __m256 acc = _mm256_setzero_ps();
+    float outlier_sum = 0.0f;  // Scalar accumulator for fused outlier corrections
 
     uint32_t aux[3];
 
@@ -2450,33 +2452,41 @@ void ggml_vec_dot_q3_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const 
 
         // multiply with block scale and accumulate
         acc = _mm256_fmadd_ps(_mm256_broadcast_ss(&d), _mm256_cvtepi32_ps(sumi), acc);
+
+        // Q3_HIFI: Optimized outlier corrections
+        // - Pre-load FP16 values for better instruction pipelining
+        // - Factor out d_y multiplication (8 muls → 1 mul)
+        {
+            const float d_y = y[i].d;
+            const int8_t * GGML_RESTRICT q8 = y[i].qs;
+            const uint8_t * GGML_RESTRICT idx = x[i].outlier_idx;
+            const ggml_fp16_t * GGML_RESTRICT vals = x[i].outlier_vals;
+
+            // Pre-load and convert all FP16 values (better pipelining)
+            const float v0 = GGML_FP16_TO_FP32(vals[0]);
+            const float v1 = GGML_FP16_TO_FP32(vals[1]);
+            const float v2 = GGML_FP16_TO_FP32(vals[2]);
+            const float v3 = GGML_FP16_TO_FP32(vals[3]);
+            const float v4 = GGML_FP16_TO_FP32(vals[4]);
+            const float v5 = GGML_FP16_TO_FP32(vals[5]);
+            const float v6 = GGML_FP16_TO_FP32(vals[6]);
+            const float v7 = GGML_FP16_TO_FP32(vals[7]);
+
+            // Accumulate without d_y, then multiply once at end
+            float block_outlier = v0 * (float)q8[idx[0]]
+                                + v1 * (float)q8[idx[1]]
+                                + v2 * (float)q8[idx[2]]
+                                + v3 * (float)q8[idx[3]]
+                                + v4 * (float)q8[idx[4]]
+                                + v5 * (float)q8[idx[5]]
+                                + v6 * (float)q8[idx[6]]
+                                + v7 * (float)q8[idx[7]];
+
+            outlier_sum += block_outlier * d_y;  // Single multiply
+        }
     }
 
-    float sumf = hsum_float_8(acc);
-
-    // Q3_HIFI: Add outlier corrections
-    // Fully unrolled loop for 6 outliers - eliminates loop overhead
-    // Note: We tried branchless masking but the computation cost outweighs
-    // any branch misprediction savings for only 6 outliers per block.
-    for (int i = 0; i < nb; ++i) {
-        const float d_y = y[i].d;
-        const int8_t * GGML_RESTRICT q8 = y[i].qs;
-        const uint8_t * GGML_RESTRICT idx = x[i].outlier_idx;
-        const ggml_fp16_t * GGML_RESTRICT vals = x[i].outlier_vals;
-        
-        // Unrolled: process all 8 outliers without loop overhead
-        // Using FMA-friendly pattern: accumulate (w * a) * d_y
-        sumf += GGML_FP16_TO_FP32(vals[0]) * (float)q8[idx[0]] * d_y;
-        sumf += GGML_FP16_TO_FP32(vals[1]) * (float)q8[idx[1]] * d_y;
-        sumf += GGML_FP16_TO_FP32(vals[2]) * (float)q8[idx[2]] * d_y;
-        sumf += GGML_FP16_TO_FP32(vals[3]) * (float)q8[idx[3]] * d_y;
-        sumf += GGML_FP16_TO_FP32(vals[4]) * (float)q8[idx[4]] * d_y;
-        sumf += GGML_FP16_TO_FP32(vals[5]) * (float)q8[idx[5]] * d_y;
-        sumf += GGML_FP16_TO_FP32(vals[6]) * (float)q8[idx[6]] * d_y;
-        sumf += GGML_FP16_TO_FP32(vals[7]) * (float)q8[idx[7]] * d_y;
-    }
-
-    *s = sumf;
+    *s = hsum_float_8(acc) + outlier_sum;
 
 #else
     // Fallback to generic implementation for non-AVX2

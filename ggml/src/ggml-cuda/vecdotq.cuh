@@ -772,7 +772,7 @@ static __device__ __forceinline__ float vec_dot_q3_K_q8_1(
     return vec_dot_q3_K_q8_1_impl_mmvq(vl, vh, u, bq3_K->scales, scale_offset, d, d8);
 }
 
-// Q3_HIFI: Q3_K layout + 6 FP16 outliers per block
+// Q3_HIFI: Q3_K layout + 8 FP16 outliers per block
 // Reuses Q3_K vec_dot logic for bulk, adds outlier corrections
 // VDR (vector dot reduction) same as Q3_K since layout is compatible
 #define VDR_Q3_HIFI_Q8_1_MMVQ VDR_Q3_K_Q8_1_MMVQ

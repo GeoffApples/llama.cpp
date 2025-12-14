@@ -1,7 +1,7 @@
 #version 450
 
 // Q3_HIFI dequantization shader
-// Uses Q3_K-compatible layout (hmask + qs + scales) with 6 FP16 outliers
+// Uses Q3_K-compatible layout (hmask + qs + scales) with 8 FP16 outliers
 
 #include "dequant_head.glsl"
 

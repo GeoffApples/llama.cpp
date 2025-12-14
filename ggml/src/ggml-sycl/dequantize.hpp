@@ -345,7 +345,7 @@ static void dequantize_block_q3_K(const void * __restrict__ vx, dst_t * __restri
 
 }
 
-// Q3_HIFI: Q3_K-compatible layout with 6 FP16 outliers
+// Q3_HIFI: Q3_K-compatible layout with 8 FP16 outliers
 template<typename dst_t>
 static void dequantize_block_q3_hifi(const void * __restrict__ vx, dst_t * __restrict__ yy,
                                      const sycl::nd_item<3> &item_ct1) {

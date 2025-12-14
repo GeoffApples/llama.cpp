@@ -76,7 +76,7 @@ static __device__ __forceinline__ void dequantize_q8_0(const void * vx, const in
     v.y *= d;
 }
 
-// Q3_HIFI: Q3_K-compatible layout with 6 FP16 outliers
+// Q3_HIFI: Q3_K-compatible layout with 8 FP16 outliers
 // Uses same hmask/qs/scales layout as Q3_K for the first 110 bytes
 static __device__ __forceinline__ void dequantize_q3_hifi(const void * vx, const int64_t ib, const int iqs, float2 & v){
     const block_q3_hifi * x = (const block_q3_hifi *) vx;

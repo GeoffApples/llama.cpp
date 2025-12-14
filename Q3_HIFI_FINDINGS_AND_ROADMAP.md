@@ -40,20 +40,20 @@ llama_model_loader: - type q6_K:       1 tensors  (output)
 
 ---
 
-## Evolution: v1 → v2
+## Development History
 
-### What Changed
+### Evolution of Outlier Count and Routing
 
 | Version | Outliers | attn_v Routing | ffn_down Routing | Result |
 |:--------|:--------:|:---------------|:-----------------|:-------|
-| **v1** | 6 | First 4 layers → Q3_HIFI | First 1/4 → Q3_HIFI | Slightly worse than Q3_K_M |
-| **v2** | **8** | **ALL layers** → Q3_HIFI | First **1/3** → Q3_HIFI | **Beats Q3_K_M!** |
+| Initial | 6 | First 4 layers → Q3_HIFI | First 1/4 → Q3_HIFI | Slightly worse than Q3_K_M |
+| **Current** | **8** | **ALL layers** → Q3_HIFI | First **1/3** → Q3_HIFI | Competitive with Q3_K_M |
 
-### Key Improvements
+### Key Design Decisions
 
-1. **+33% more outliers** (6 → 8 per block): More precision where it matters
+1. **8 outliers per block** (was 6): More precision where it matters
 2. **ALL attn_v protected**: These tensors are consistently sensitive across all layers
-3. **More ffn_down coverage**: First 1/3 instead of 1/4
+3. **First 1/3 ffn_down protected**: Early FFN layers have highest error contribution
 
 ---
 
@@ -76,12 +76,13 @@ llama_model_loader: - type q6_K:       1 tensors  (output)
 | Python tooling | ✅ Done | gguf-py + convert_hf_to_gguf.py |
 | **Q3_HIFI_A v2** | ✅ Done | **Beats Q3_K_M in all metrics!** |
 
-### Available Quantization Types
+### Quantization Type
 
-| Type | CLI Name | Description |
-|:-----|:---------|:------------|
-| `LLAMA_FTYPE_MOSTLY_Q3_HIFI` | `Q3_HIFI` | Uniform Q3_HIFI on all tensors (~4.5 bpw) |
-| `LLAMA_FTYPE_MOSTLY_Q3_HIFI_A` | `Q3_HIFI_A` | **Recommended**: Adaptive routing (~4.1 bpw) |
+| CLI Name | Internal Type | Description |
+|:---------|:--------------|:------------|
+| `Q3_HIFI` | `LLAMA_FTYPE_MOSTLY_Q3_HIFI` | Adaptive: Q3_HIFI on sensitive layers, Q3_K/Q4_K elsewhere (~4.1 bpw) |
+
+> **Note**: There is only one `Q3_HIFI` option - it automatically uses adaptive routing.
 
 ### ⚠️ Known Issues
 
@@ -89,7 +90,9 @@ llama_model_loader: - type q6_K:       1 tensors  (output)
 
 ---
 
-## Adaptive Q3_HIFI_A v2 Routing Strategy
+## Adaptive Routing Strategy
+
+When you use `Q3_HIFI`, the following routing is automatically applied:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -106,14 +109,17 @@ llama_model_loader: - type q6_K:       1 tensors  (output)
 ### Usage
 
 ```bash
-# Quantize with Q3_HIFI_A (recommended)
-llama-quantize --imatrix imatrix.gguf model-f16.gguf model-Q3_HIFI_A.gguf Q3_HIFI_A
+# Quantize with Q3_HIFI (automatically uses adaptive routing)
+llama-quantize model-f16.gguf model-Q3_HIFI.gguf Q3_HIFI
+
+# With importance matrix (recommended for best quality)
+llama-quantize --imatrix imatrix.gguf model-f16.gguf model-Q3_HIFI.gguf Q3_HIFI
 
 # Benchmark
-llama-bench -m model-Q3_HIFI_A.gguf -t 6 -r 3 -p 0 -n 20
+llama-bench -m model-Q3_HIFI.gguf -t 6 -r 3 -p 0 -n 20
 
 # Perplexity test
-llama-perplexity -m model-Q3_HIFI_A.gguf -f wikitext-2-raw/wiki.test.raw -c 512
+llama-perplexity -m model-Q3_HIFI.gguf -f wikitext-2-raw/wiki.test.raw -c 512
 ```
 
 ---
@@ -122,8 +128,8 @@ llama-perplexity -m model-Q3_HIFI_A.gguf -f wikitext-2-raw/wiki.test.raw -c 512
 
 ### Core Headers
 - `ggml/include/ggml.h` - GGML_TYPE_Q3_HIFI enum
-- `include/llama.h` - LLAMA_FTYPE_MOSTLY_Q3_HIFI, LLAMA_FTYPE_MOSTLY_Q3_HIFI_A enums
-- `ggml/src/ggml-common.h` - block_q3_hifi structure (8 outliers)
+- `include/llama.h` - LLAMA_FTYPE_MOSTLY_Q3_HIFI enum (adaptive routing)
+- `ggml/src/ggml-common.h` - block_q3_hifi structure (8 outliers, uint8_t indices)
 
 ### Quantization
 - `ggml/src/ggml-quants.c` - quantize/dequantize functions
@@ -152,19 +158,18 @@ llama-perplexity -m model-Q3_HIFI_A.gguf -f wikitext-2-raw/wiki.test.raw -c 512
 
 | Use Case | Recommended Format | Notes |
 |:---------|:-------------------|:------|
-| **Best 3-bit quantization** | **Q3_HIFI_A** | Beats Q3_K_M in all metrics |
-| **Legacy/compatibility** | Q3_K_M | If you need proven, established format |
+| **Memory-constrained** | **Q3_HIFI** | 25 MiB smaller than Q3_K_M |
+| **Best quality at 3-bit** | Q3_K_M | Slightly better PPL (17.69 vs 18.12) |
 | **Maximum speed** | Q3_K_S | Fastest, but significant quality loss |
-| **Research** | Q3_HIFI (uniform) | For studying outlier effects |
 
-### Quality vs Size vs Speed
+### Quality vs Size vs Speed (Qwen3-1.7B)
 
 ```
                     Size      Speed     Quality
                     ────      ─────     ───────
 Q3_K_S             ████░░     █████     ██░░░░░░  (fast but low quality)
-Q3_HIFI_A v2       █████░     ████░     ████████  (🏆 BEST OVERALL)
-Q3_K_M             ██████     ███░░     ███████░  (former champion)
+Q3_HIFI            █████░     ████░     ███████░  (25 MiB smaller)
+Q3_K_M             ██████     ████░     ████████  (best quality)
 ```
 
 ---
@@ -181,31 +186,31 @@ Q3_K_M             ██████     ███░░     ██████
 
 ## Conclusion
 
-### 🏆 Mission Accomplished
+### Summary
 
-**Q3_HIFI_A v2 is now the superior 3-bit quantization format**, beating the long-established Q3_K_M in:
+**Q3_HIFI** is a viable alternative to Q3_K_M for memory-constrained deployments:
 
-- ✅ **Size**: 24 MiB smaller (-2.4%)
-- ✅ **Speed**: 6.4% faster  
-- ✅ **Quality**: Better perplexity (17.66 vs 17.69)
+- ✅ **Size**: 25 MiB smaller (-2.4%)
+- ⚠️ **Speed**: ~1% slower (within margin of error)
+- ⚠️ **Quality**: ~2.4% higher PPL (18.12 vs 17.69)
 
-### The Winning Formula
+### The Q3_HIFI Formula
 
 ```
-Q3_HIFI_A v2 = Q3_K base 
-             + 8 FP16 outliers per block
-             + ALL attn_v in Q3_HIFI
-             + First 1/3 ffn_down in Q3_HIFI
-             + Smart Q4_K/Q3_K routing elsewhere
+Q3_HIFI = Q3_K base quantization
+        + 8 FP16 outliers per block (on sensitive tensors)
+        + ALL attn_v layers → Q3_HIFI type
+        + First 1/3 ffn_down layers → Q3_HIFI type
+        + Rest → Q4_K/Q3_K (adaptive routing)
 ```
 
 ### What We Built
 
 - ✅ **Complete Q3_HIFI infrastructure** - CPU, CUDA, Metal, SYCL, Vulkan (partial)
-- ✅ **Production-ready Q3_HIFI_A** - Better than Q3_K_M across the board
 - ✅ **Full tooling integration** - llama-quantize, gguf-py, convert_hf_to_gguf.py
+- ✅ **Optimized vec_dot kernels** - Pre-loaded FP16 values, factored multiplications
 
-**Q3_HIFI_A should be the new default for 3-bit quantization in llama.cpp.** 🚀
+**Use Q3_HIFI when you need to save ~25 MiB and can tolerate slightly higher perplexity.**
 
 ---
 

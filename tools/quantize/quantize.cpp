@@ -44,6 +44,7 @@ static const std::vector<quant_option> QUANT_OPTIONS = {
     { "Q3_K_M",   LLAMA_FTYPE_MOSTLY_Q3_K_M,   " 3.74G, +0.6569 ppl @ Llama-3-8B",  },
     { "Q3_K_L",   LLAMA_FTYPE_MOSTLY_Q3_K_L,   " 4.03G, +0.5562 ppl @ Llama-3-8B",  },
     { "Q3_HIFI",  LLAMA_FTYPE_MOSTLY_Q3_HIFI,  " ~4.1 bpw, 25 MiB smaller than Q3_K_M, adaptive routing", },
+    { "Q3_HIFI_SCALE", LLAMA_FTYPE_MOSTLY_Q3_HIFI_SCALE, " ~3.4 bpw, Q3_K speed, outliers absorbed into scales", },
     { "IQ4_NL",   LLAMA_FTYPE_MOSTLY_IQ4_NL,   " 4.50 bpw non-linear quantization", },
     { "IQ4_XS",   LLAMA_FTYPE_MOSTLY_IQ4_XS,   " 4.25 bpw non-linear quantization", },
     { "Q4_K",     LLAMA_FTYPE_MOSTLY_Q4_K_M,   "alias for Q4_K_M",                  },

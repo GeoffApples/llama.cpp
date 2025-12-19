@@ -805,27 +805,30 @@ static __device__ __forceinline__ float vec_dot_q3_hifi_q8_1(
     // Compute Q3_K bulk dot product (outliers were pre-zeroed during quantization)
     float sum = vec_dot_q3_K_q8_1_impl_mmvq(vl, vh, u, bq3_hifi->scales, scale_offset, d, d8);
 
-    // === Q3_HIFI outlier correction ===
-    // Each outlier contributes: outlier_val * q8_val * d8
-    // Outliers are sparse (8 per 256 weights), so all threads check all 8
-    // and only add if the outlier falls within their processing range
+    // === Q3_HIFI outlier correction (optimized) ===
+    // Use bit operations instead of divisions for maximum throughput:
+    // - idx >> 5  = idx / 32 (QK8_1)
+    // - idx & 31  = idx % 32
+    // - x >> 2    = x / 4
+    // - iqs & 7   = iqs % 8 (QI8_1)
     
-    const int thread_q8_offset = iqs % QI8_1;
+    const int thread_q8_offset = iqs & (QI8_1 - 1);  // iqs % 8
+    const int bq8_range_end = bq8_offset + QR3_K;
     
 #pragma unroll
     for (int k = 0; k < Q3_HIFI_OUTLIERS; ++k) {
         const int idx = bq3_hifi->outlier_idx[k];
-        const int idx_bq8 = idx / QK8_1;
-        const int idx_in_bq8 = idx % QK8_1;
+        const int idx_bq8 = idx >> 5;              // idx / 32
+        const int idx_in_bq8 = idx & 31;           // idx % 32
+        const int pos_in_q8_group = idx_in_bq8 >> 2;  // idx_in_bq8 / 4
         
-        if (idx_bq8 >= bq8_offset && idx_bq8 < bq8_offset + QR3_K) {
-            const int pos_in_q8_group = idx_in_bq8 / 4;
-            if (pos_in_q8_group == thread_q8_offset) {
-                const float outlier_val = __half2float(bq3_hifi->outlier_vals[k]);
-                const int8_t q8_val = ((const int8_t*)bq8_1[idx_bq8].qs)[idx_in_bq8];
-                const float d8_val = __low2float(bq8_1[idx_bq8].ds);
-                sum += outlier_val * q8_val * d8_val;
-            }
+        // Combined range check: bq8_offset <= idx_bq8 < bq8_offset + QR3_K
+        // AND position check: pos_in_q8_group == thread_q8_offset
+        if ((idx_bq8 >= bq8_offset) & (idx_bq8 < bq8_range_end) & (pos_in_q8_group == thread_q8_offset)) {
+            const float outlier_val = __half2float(bq3_hifi->outlier_vals[k]);
+            const int8_t q8_val = ((const int8_t*)bq8_1[idx_bq8].qs)[idx_in_bq8];
+            const float d8_val = __low2float(bq8_1[idx_bq8].ds);
+            sum += outlier_val * q8_val * d8_val;
         }
     }
 

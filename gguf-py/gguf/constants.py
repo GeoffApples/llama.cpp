@@ -3161,7 +3161,8 @@ class GGMLQuantizationType(IntEnum):
     TQ1_0   = 34
     TQ2_0   = 35
     MXFP4   = 39
-    Q3_HIFI = 41  # Q3_K layout + 6 FP16 outliers per block
+    Q3_HIFI = 41  # Q3_K layout + 8 FP16 outliers per block
+    Q3_HIFI_SCALE = 42  # Q3_K format with outliers absorbed into scales (no runtime overhead)
 
 
 class ExpertGatingFuncType(IntEnum):
@@ -3312,6 +3313,7 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.TQ2_0:   (256, 2 + 64),
     GGMLQuantizationType.MXFP4:   (32, 1 + 16),
     GGMLQuantizationType.Q3_HIFI: (256, 134),  # Q3_K (110 bytes) + outlier_idx[8] + outlier_vals[16]
+    GGMLQuantizationType.Q3_HIFI_SCALE: (256, 110),  # Same as Q3_K (outliers absorbed into scales)
 }
 
 

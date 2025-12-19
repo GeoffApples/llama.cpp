@@ -773,6 +773,14 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q3_HIFI> {
 };
 
 template<>
+struct ggml_cuda_type_traits<GGML_TYPE_Q3_HIFI_SCALE> {
+    // Same as Q3_K - uses identical block format
+    static constexpr int qk = QK_K;
+    static constexpr int qr = QR3_K;
+    static constexpr int qi = QI3_K;
+};
+
+template<>
 struct ggml_cuda_type_traits<GGML_TYPE_Q4_K> {
     static constexpr int qk = QK_K;
     static constexpr int qr = QR4_K;

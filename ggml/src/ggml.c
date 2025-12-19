@@ -719,6 +719,17 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .to_float                 = (ggml_to_float_t) dequantize_row_q3_hifi,
         .from_float_ref           = (ggml_from_float_t) quantize_row_q3_hifi_ref,
     },
+    [GGML_TYPE_Q3_HIFI_SCALE] = {
+        // Q3_HIFI_SCALE: Absorbs outliers into Q3_K scales - uses pure Q3_K format
+        // Same block format as Q3_K, so all Q3_K kernels work unchanged
+        // Quantization includes outliers in scale computation (no separate storage)
+        .type_name                = "Q3_HIFI_SCALE",
+        .blck_size                = QK_K,
+        .type_size                = sizeof(block_q3_K),  // Same as Q3_K!
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_q3_K,  // Reuse Q3_K
+        .from_float_ref           = (ggml_from_float_t) quantize_row_q3_K_ref,  // Reuse Q3_K
+    },
     [GGML_TYPE_Q4_K] = {
         .type_name                = "q4_K",
         .blck_size                = QK_K,
@@ -7493,6 +7504,7 @@ size_t ggml_quantize_chunk(
         case GGML_TYPE_IQ4_NL:  result = quantize_iq4_nl (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ4_XS:  result = quantize_iq4_xs (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q3_HIFI: result = quantize_q3_hifi(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q3_HIFI_SCALE: result = quantize_q3_K(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;  // Reuse Q3_K quantizer
         case GGML_TYPE_F16:
             {
                 size_t elemsize = sizeof(ggml_fp16_t);

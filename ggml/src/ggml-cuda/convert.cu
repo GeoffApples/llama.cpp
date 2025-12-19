@@ -731,6 +731,8 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
             return dequantize_row_q3_K_cuda;
         case GGML_TYPE_Q3_HIFI:
             return dequantize_row_q3_hifi_cuda;
+        case GGML_TYPE_Q3_HIFI_SCALE:
+            return dequantize_row_q3_K_cuda;  // Uses Q3_K format
         case GGML_TYPE_Q4_K:
             return dequantize_row_q4_K_cuda;
         case GGML_TYPE_Q5_K:
@@ -784,6 +786,8 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
             return dequantize_row_q3_K_cuda;
         case GGML_TYPE_Q3_HIFI:
             return dequantize_row_q3_hifi_cuda;
+        case GGML_TYPE_Q3_HIFI_SCALE:
+            return dequantize_row_q3_K_cuda;  // Uses Q3_K format
         case GGML_TYPE_Q4_K:
             return dequantize_row_q4_K_cuda;
         case GGML_TYPE_Q5_K:

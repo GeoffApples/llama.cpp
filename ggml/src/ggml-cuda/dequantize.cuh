@@ -78,7 +78,6 @@ static __device__ __forceinline__ void dequantize_q8_0(const void * vx, const in
 
 // Q3_HIFI: Q3_K-compatible layout with 8 FP16 outliers
 // Uses same hmask/qs/scales layout as Q3_K for the first 110 bytes
-// Optimized with bit operations instead of divisions
 static __device__ __forceinline__ void dequantize_q3_hifi(const void * vx, const int64_t ib, const int iqs, float2 & v){
     const block_q3_hifi * x = (const block_q3_hifi *) vx;
 
@@ -89,31 +88,30 @@ static __device__ __forceinline__ void dequantize_q3_hifi(const void * vx, const
     
     // iqs is in range [0, QK_K/2) = [0, 128)
     // We need to extract 2 values at positions iqs*2 and iqs*2+1
-    const int idx0 = iqs << 1;       // iqs * 2
-    const int idx1 = idx0 | 1;       // iqs * 2 + 1
+    int idx0 = iqs * 2;
+    int idx1 = iqs * 2 + 1;
     
     // Q3_K bit layout:
     // - qs[64]: lower 2 bits packed as 4 values per byte
     // - hmask[32]: high bit packed as 8 values per byte
-    // Use bit operations: /4 → >>2, %4 → &3, /8 → >>3, %8 → &7
     
     // Extract first value
-    const int qs_byte0 = idx0 >> 2;           // idx0 / 4
-    const int qs_shift0 = (idx0 & 3) << 1;    // (idx0 % 4) * 2
-    const int hm_byte0 = idx0 >> 3;           // idx0 / 8
-    const int hm_shift0 = idx0 & 7;           // idx0 % 8
+    const int qs_byte0 = idx0 / 4;
+    const int qs_shift0 = (idx0 % 4) * 2;
+    const int hm_byte0 = idx0 / 8;
+    const int hm_shift0 = idx0 % 8;
     const int lo0 = (qs[qs_byte0] >> qs_shift0) & 0x03;
     const int hi0 = (hmask[hm_byte0] >> hm_shift0) & 0x01;
-    const int quant_val0 = (lo0 | (hi0 << 2)) - 4;
+    int quant_val0 = (lo0 | (hi0 << 2)) - 4;
     
     // Extract second value
-    const int qs_byte1 = idx1 >> 2;           // idx1 / 4
-    const int qs_shift1 = (idx1 & 3) << 1;    // (idx1 % 4) * 2
-    const int hm_byte1 = idx1 >> 3;           // idx1 / 8
-    const int hm_shift1 = idx1 & 7;           // idx1 % 8
+    const int qs_byte1 = idx1 / 4;
+    const int qs_shift1 = (idx1 % 4) * 2;
+    const int hm_byte1 = idx1 / 8;
+    const int hm_shift1 = idx1 % 8;
     const int lo1 = (qs[qs_byte1] >> qs_shift1) & 0x03;
     const int hi1 = (hmask[hm_byte1] >> hm_shift1) & 0x01;
-    const int quant_val1 = (lo1 | (hi1 << 2)) - 4;
+    int quant_val1 = (lo1 | (hi1 << 2)) - 4;
     
     v.x = quant_val0 * d;
     v.y = quant_val1 * d;
@@ -122,11 +120,10 @@ static __device__ __forceinline__ void dequantize_q3_hifi(const void * vx, const
     // Outliers are sparse (only 8 per 256 weights), so this loop is cheap
     #pragma unroll
     for (int k = 0; k < Q3_HIFI_OUTLIERS; ++k) {
-        const int outlier_idx = x[ib].outlier_idx[k];
-        if (outlier_idx == idx0) {
+        if (x[ib].outlier_idx[k] == idx0) {
             v.x = __half2float(x[ib].outlier_vals[k]);
         }
-        if (outlier_idx == idx1) {
+        if (x[ib].outlier_idx[k] == idx1) {
             v.y = __half2float(x[ib].outlier_vals[k]);
         }
     }

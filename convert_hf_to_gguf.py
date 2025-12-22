@@ -2806,6 +2806,21 @@ class Mistral3Model(LlamaModel):
         return super().modify_tensors(data_torch, name, bid)
 
 
+@ModelBase.register("Ministral3ForCausalLM")
+class Ministral3Model(LlamaModel):
+    model_arch = gguf.MODEL_ARCH.LLAMA
+
+    def set_vocab(self):
+        # Ministral3 uses the Mistral tekken tokenizer format
+        self._set_vocab_mistral()
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None):
+        # Skip activation_scale tensors (used for quantization, not needed for GGUF)
+        if "activation_scale" in name:
+            return []
+        return super().modify_tensors(data_torch, name, bid)
+
+
 @ModelBase.register("DeciLMForCausalLM")
 class DeciModel(TextModel):
     model_arch = gguf.MODEL_ARCH.DECI

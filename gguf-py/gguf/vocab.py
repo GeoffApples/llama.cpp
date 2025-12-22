@@ -689,6 +689,10 @@ class MistralVocab(Vocab):
         else:
             tokenizer_file = valid_tokenizer_files[0]
 
+        # Handle case where tokenizer_file might be a tuple (older mistral_common versions)
+        if isinstance(tokenizer_file, tuple):
+            tokenizer_file = tokenizer_file[0]
+
         self.tokenizer = MistralTokenizer.from_file(
             base_path / tokenizer_file
         ).instruct_tokenizer.tokenizer

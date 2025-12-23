@@ -106,6 +106,11 @@ GGML_API void iq3xs_free_impl(int grid_size);
 GGML_API void dequantize_row_q3_hifi(const block_q3_hifi * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API size_t quantize_q3_hifi(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 
+// Q3_HIFI_F32_RAW: Phase 0 validation format with FP32 outliers
+GGML_API void quantize_row_q3_hifi_f32_raw_ref(const float * GGML_RESTRICT x, block_q3_hifi_f32_raw * GGML_RESTRICT y, int64_t k);
+GGML_API void dequantize_row_q3_hifi_f32_raw(const block_q3_hifi_f32_raw * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+GGML_API size_t quantize_q3_hifi_f32_raw(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
+
 #ifdef __cplusplus
 }
 #endif

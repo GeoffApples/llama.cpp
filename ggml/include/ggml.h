@@ -204,6 +204,10 @@
 #    define GGML_ATTRIBUTE_FORMAT(...) __attribute__((format(printf, __VA_ARGS__)))
 #endif
 
+#if defined(_WIN32) && !defined(_WIN32_WINNT)
+#    define _WIN32_WINNT 0x0A00
+#endif
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -372,16 +376,8 @@ extern "C" {
     GGML_API void        ggml_fp32_to_bf16_row_ref(const float *, ggml_bf16_t *, int64_t);
     GGML_API void        ggml_fp32_to_bf16_row(const float *, ggml_bf16_t *, int64_t);
 
-    // Q3_HIFI: 3-bit + 6 FP16 outliers per 256 weights (improved accuracy)
-    #define Q3_HIFI_BLOCK_SIZE           256
-    #define Q3_HIFI_OUTFIERS_PER_BLOCK   6
-
-    typedef struct {
-        float    d;                                        // scale for 3-bit bulk
-        uint8_t  qs[96];                                   // 256 x 3-bit packed
-        uint16_t outlier_idx[Q3_HIFI_OUTFIERS_PER_BLOCK];  // indices of outliers
-        uint16_t outlier_vals[Q3_HIFI_OUTFIERS_PER_BLOCK]; // FP16 outlier values
-    } block_q3_hifi;
+    // Q3_HIFI block structure is defined in ggml-common.h for GPU backend compatibility
+    // Uses Q3_K-compatible layout with 6 FP16 outliers for improved accuracy
 
     struct ggml_object;
     struct ggml_context;
@@ -401,36 +397,36 @@ extern "C" {
         GGML_TYPE_Q8_1    = 9,
         GGML_TYPE_Q2_K    = 10,
         GGML_TYPE_Q3_K    = 11,
-        GGML_TYPE_Q3_HIFI = 12, // Q3 HIFI (1 block)
-        GGML_TYPE_Q4_K    = 13,
-        GGML_TYPE_Q5_K    = 14,
-        GGML_TYPE_Q6_K    = 15,
-        GGML_TYPE_Q8_K    = 16,
-        GGML_TYPE_IQ2_XXS = 17,
-        GGML_TYPE_IQ2_XS  = 18,
-        GGML_TYPE_IQ3_XXS = 19,
-        GGML_TYPE_IQ1_S   = 20,
-        GGML_TYPE_IQ4_NL  = 21,
-        GGML_TYPE_IQ3_S   = 22,
-        GGML_TYPE_IQ2_S   = 23,
-        GGML_TYPE_IQ4_XS  = 24,
-        GGML_TYPE_I8      = 25,
-        GGML_TYPE_I16     = 26,
-        GGML_TYPE_I32     = 27,
-        GGML_TYPE_I64     = 28,
-        GGML_TYPE_F64     = 29,
-        GGML_TYPE_IQ1_M   = 30,
-        GGML_TYPE_BF16    = 31,
-        // GGML_TYPE_Q4_0_4_4 = 32, support has been removed from gguf files
-        // GGML_TYPE_Q4_0_4_8 = 33,
-        // GGML_TYPE_Q4_0_8_8 = 34,
-        GGML_TYPE_TQ1_0   = 35,
-        GGML_TYPE_TQ2_0   = 36,
-        // GGML_TYPE_IQ4_NL_4_4 = 37,
-        // GGML_TYPE_IQ4_NL_4_8 = 38,
-        // GGML_TYPE_IQ4_NL_8_8 = 39,
-        GGML_TYPE_MXFP4   = 40, // MXFP4 (1 block)
-        GGML_TYPE_COUNT   = 41,   
+        GGML_TYPE_Q4_K    = 12,
+        GGML_TYPE_Q5_K    = 13,
+        GGML_TYPE_Q6_K    = 14,
+        GGML_TYPE_Q8_K    = 15,
+        GGML_TYPE_IQ2_XXS = 16,
+        GGML_TYPE_IQ2_XS  = 17,
+        GGML_TYPE_IQ3_XXS = 18,
+        GGML_TYPE_IQ1_S   = 19,
+        GGML_TYPE_IQ4_NL  = 20,
+        GGML_TYPE_IQ3_S   = 21,
+        GGML_TYPE_IQ2_S   = 22,
+        GGML_TYPE_IQ4_XS  = 23,
+        GGML_TYPE_I8      = 24,
+        GGML_TYPE_I16     = 25,
+        GGML_TYPE_I32     = 26,
+        GGML_TYPE_I64     = 27,
+        GGML_TYPE_F64     = 28,
+        GGML_TYPE_IQ1_M   = 29,
+        GGML_TYPE_BF16    = 30,
+        // GGML_TYPE_Q4_0_4_4 = 31, support has been removed from gguf files
+        // GGML_TYPE_Q4_0_4_8 = 32,
+        // GGML_TYPE_Q4_0_8_8 = 33,
+        GGML_TYPE_TQ1_0   = 34,
+        GGML_TYPE_TQ2_0   = 35,
+        // GGML_TYPE_IQ4_NL_4_4 = 36,
+        // GGML_TYPE_IQ4_NL_4_8 = 37,
+        // GGML_TYPE_IQ4_NL_8_8 = 38,
+        GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
+        GGML_TYPE_Q3_HIFI = 40, // Q3_HIFI: Q3_K layout + 6 FP16 outliers per block
+        GGML_TYPE_COUNT   = 41,
     };
 
     // precision
@@ -2160,7 +2156,8 @@ extern "C" {
     };
 
     enum ggml_scale_flag {
-        GGML_SCALE_FLAG_ALIGN_CORNERS = (1 << 8)
+        GGML_SCALE_FLAG_ALIGN_CORNERS = (1 << 8),
+        GGML_SCALE_FLAG_ANTIALIAS     = (1 << 9),
     };
 
     // interpolate
@@ -2203,6 +2200,15 @@ extern "C" {
             int                  p2,
             int                  p3);
 
+    // pad each dimension with values on the other side of the torus (looping around)
+    GGML_API struct ggml_tensor * ggml_pad_circular(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            int                   p0,
+            int                   p1,
+            int                   p2,
+            int                   p3);
+
     GGML_API struct ggml_tensor * ggml_pad_ext(
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
@@ -2215,6 +2221,19 @@ extern "C" {
             int                  lp3,
             int                  rp3
             );
+
+    // pad each dimension with values on the other side of the torus (looping around)
+    GGML_API struct ggml_tensor * ggml_pad_ext_circular(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            int                   lp0,
+            int                   rp0,
+            int                   lp1,
+            int                   rp1,
+            int                   lp2,
+            int                   rp2,
+            int                   lp3,
+            int                   rp3);
 
     // pad each dimension with reflection: [a, b, c, d] -> [b, a, b, c, d, c]
     GGML_API struct ggml_tensor * ggml_pad_reflect_1d(
@@ -2290,13 +2309,11 @@ extern "C" {
             float                 stop,
             float                 step);
 
-#define GGML_KQ_MASK_PAD 64
-
-    // q:    [n_embd_k, n_batch,     n_head,    ne3 ]
-    // k:    [n_embd_k, n_kv,        n_head_kv, ne3 ]
-    // v:    [n_embd_v, n_kv,        n_head_kv, ne3 ] !! not transposed !!
-    // mask: [n_kv,     n_batch_pad, ne32,      ne33] !! n_batch_pad = GGML_PAD(n_batch, GGML_KQ_MASK_PAD) !!
-    // res:  [n_embd_v, n_head,      n_batch,   ne3 ] !! permuted !!
+    // q:    [n_embd_k, n_batch, n_head,    ne3 ]
+    // k:    [n_embd_k, n_kv,    n_head_kv, ne3 ]
+    // v:    [n_embd_v, n_kv,    n_head_kv, ne3 ] !! not transposed !!
+    // mask: [n_kv,     n_batch, ne32,      ne33]
+    // res:  [n_embd_v, n_head,  n_batch,   ne3 ] !! permuted !!
     //
     // broadcast:
     //   n_head % n_head_kv == 0

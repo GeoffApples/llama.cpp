@@ -2,6 +2,13 @@
 #include "dequantize.hpp"
 #include "presets.hpp"
 
+#if defined(__INTEL_LLVM_COMPILER)
+    #if __has_include(<sycl/ext/oneapi/bfloat16.hpp>)
+        #include <sycl/ext/oneapi/bfloat16.hpp>
+        #define GGML_SYCL_HAS_BF16
+    #endif
+#endif
+
 template <int qk, int qr, dequantize_kernel_t dequantize_kernel, typename dst_t>
 static void dequantize_block(const void * __restrict__ vx, dst_t * __restrict__ y, const int64_t k,
                              const sycl::nd_item<3> &item_ct1) {
@@ -102,6 +109,38 @@ static void dequantize_row_q3_K_sycl(const void *vx, dst_t *y, const int64_t k,
                                                sycl::range<3>(1, 1, 32)),
                              [=](sycl::nd_item<3> item_ct1) {
                                  dequantize_block_q3_K(vx, y, item_ct1);
+                             });
+    }
+#endif
+}
+
+// Q3_HIFI: Q3_K-compatible layout with 6 FP16 outliers
+template <typename dst_t>
+static void dequantize_row_q3_hifi_sycl(const void *vx, dst_t *y, const int64_t k,
+                                        dpct::queue_ptr stream) {
+    const int64_t nb = k / QK_K;
+#if QK_K == 256
+    {
+        dpct::has_capability_or_fail(stream->get_device(),
+                                     {sycl::aspect::fp16});
+
+        stream->parallel_for(sycl::nd_range<3>(sycl::range<3>(1, 1, nb) *
+                                                   sycl::range<3>(1, 1, 64),
+                                               sycl::range<3>(1, 1, 64)),
+                             [=](sycl::nd_item<3> item_ct1) {
+                                 dequantize_block_q3_hifi(vx, y, item_ct1);
+                             });
+    }
+#else
+    {
+        dpct::has_capability_or_fail(stream->get_device(),
+                                     {sycl::aspect::fp16});
+
+        stream->parallel_for(sycl::nd_range<3>(sycl::range<3>(1, 1, nb) *
+                                                   sycl::range<3>(1, 1, 32),
+                                               sycl::range<3>(1, 1, 32)),
+                             [=](sycl::nd_item<3> item_ct1) {
+                                 dequantize_block_q3_hifi(vx, y, item_ct1);
                              });
     }
 #endif
@@ -532,6 +571,8 @@ to_fp16_sycl_t ggml_get_to_fp16_sycl(ggml_type type, ggml_tensor * dst) {
             return dequantize_row_q2_K_sycl;
         case GGML_TYPE_Q3_K:
             return dequantize_row_q3_K_sycl;
+        case GGML_TYPE_Q3_HIFI:
+            return dequantize_row_q3_hifi_sycl;
         case GGML_TYPE_Q4_K:
             if (dst->src[0]->extra && ((ggml_tensor_extra_gpu *) dst->src[0]->extra)->optimized_feature.reorder) {
                 return dequantize_row_q4_K_sycl_reorder;
@@ -566,6 +607,10 @@ to_fp16_sycl_t ggml_get_to_fp16_sycl(ggml_type type, ggml_tensor * dst) {
             return dequantize_row_iq4_nl_sycl;
         case GGML_TYPE_F32:
             return convert_unary_sycl<float>;
+#ifdef GGML_SYCL_HAS_BF16
+        case GGML_TYPE_BF16:
+            return convert_unary_sycl<sycl::ext::oneapi::bfloat16>;
+#endif
         default:
             return nullptr;
     }
@@ -592,6 +637,8 @@ to_fp32_sycl_t ggml_get_to_fp32_sycl(ggml_type type, ggml_tensor *dst) {
             return dequantize_row_q2_K_sycl;
         case GGML_TYPE_Q3_K:
             return dequantize_row_q3_K_sycl;
+        case GGML_TYPE_Q3_HIFI:
+            return dequantize_row_q3_hifi_sycl;
         case GGML_TYPE_Q4_K:
             if (dst->src[0]->extra &&
                 ((ggml_tensor_extra_gpu*)dst->src[0]->extra)->optimized_feature.reorder) {
@@ -627,6 +674,10 @@ to_fp32_sycl_t ggml_get_to_fp32_sycl(ggml_type type, ggml_tensor *dst) {
             return dequantize_row_iq4_nl_sycl;
         case GGML_TYPE_F16:
             return convert_unary_sycl<sycl::half>;
+#ifdef GGML_SYCL_HAS_BF16
+        case GGML_TYPE_BF16:
+            return convert_unary_sycl<sycl::ext::oneapi::bfloat16>;
+#endif
         default:
             return nullptr;
     }
@@ -636,6 +687,10 @@ to_fp16_nc_sycl_t get_to_fp16_nc_sycl(ggml_type type) {
     switch (type) {
         case GGML_TYPE_F32:
             return convert_unary_nc_sycl<float>;
+#ifdef GGML_SYCL_HAS_BF16
+        case GGML_TYPE_BF16:
+            return convert_unary_nc_sycl<sycl::ext::oneapi::bfloat16>;
+#endif
         default:
             return nullptr;
     }

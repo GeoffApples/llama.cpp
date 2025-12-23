@@ -305,7 +305,7 @@ typedef struct {
 } block_q3_hifi;
 static_assert(sizeof(block_q3_hifi) == sizeof(block_q3_K) + Q3_HIFI_OUTLIERS + Q3_HIFI_OUTLIERS*sizeof(ggml_half), "wrong q3_hifi block size/padding");
 
-// Q3_HIFI_F32_RAW: Q3_K-compatible layout with 6 FP32 outliers for maximum precision
+// Q3_HIFI_F32_RAW: Q3_K-compatible layout with 8 FP32 outliers for maximum precision
 // Phase 0 format: validates whether FP32 outliers provide measurable benefit over FP16
 // Uses 8 outliers (same as Q3_HIFI) for true apples-to-apples FP32 vs FP16 comparison
 #define Q3_HIFI_F32_BLOCK_SIZE 256
@@ -316,11 +316,13 @@ typedef struct {
     uint8_t qs[QK_K/4];                     // 64 bytes: low 2 bits
     uint8_t scales[12];                     // 12 bytes: 16 sub-group scales (6-bit each)
     ggml_half d;                            // 2 bytes: super-block scale
-    // === FP32 OUTLIER EXTENSION (40 bytes) ===
+    // === FP32 OUTLIER EXTENSION (42 bytes with padding) ===
     uint8_t outlier_idx[Q3_HIFI_F32_OUTLIERS]; // 8 bytes: outlier positions (0-255)
+    // 2 bytes implicit padding for float alignment
     float outlier_vals[Q3_HIFI_F32_OUTLIERS];  // 32 bytes: FP32 outlier values (full precision)
 } block_q3_hifi_f32_raw;
-static_assert(sizeof(block_q3_hifi_f32_raw) == sizeof(block_q3_K) + Q3_HIFI_F32_OUTLIERS + Q3_HIFI_F32_OUTLIERS*sizeof(float), "wrong q3_hifi_f32_raw block size/padding");
+// Total: 110 + 8 + 2 (padding) + 32 = 152 bytes
+static_assert(sizeof(block_q3_hifi_f32_raw) == 152, "wrong q3_hifi_f32_raw block size/padding");
 
 // 4-bit quantization
 // 8 blocks of 32 elements each

@@ -5613,6 +5613,22 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
                 VALIDATE_ROW_DATA_D_F16_IMPL(block_q3_hifi, data, nb);
             } break;
 
+        case GGML_TYPE_Q3_HIFI_F32_RAW:
+            {
+                const block_q3_hifi_f32_raw * q = (const block_q3_hifi_f32_raw *) data;
+                for (size_t i = 0; i < nb; ++i) {
+                    if (!validate_fp16(q[i].d, i)) {
+                        return false;
+                    }
+                    // Validate FP32 outlier values
+                    for (int k = 0; k < Q3_HIFI_F32_OUTLIERS; ++k) {
+                        if (!validate_float(q[i].outlier_vals[k], i)) {
+                            return false;
+                        }
+                    }
+                }
+            } break;
+
         case GGML_TYPE_I8:
         case GGML_TYPE_I16:
         case GGML_TYPE_I32:

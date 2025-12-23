@@ -299,6 +299,10 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             // Adaptive Q3_HIFI: use Q3_HIFI for ALL attn_v layers (consistently sensitive)
             new_type = GGML_TYPE_Q3_HIFI;
         }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_HIFI_F32_RAW) {
+            // Adaptive Q3_HIFI_F32_RAW: same strategy as Q3_HIFI but with FP32 outliers
+            new_type = GGML_TYPE_Q3_HIFI_F32_RAW;
+        }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_L) new_type = GGML_TYPE_Q5_K;
         else if ((ftype == LLAMA_FTYPE_MOSTLY_IQ4_NL || ftype == LLAMA_FTYPE_MOSTLY_IQ4_XS) && qs.model.hparams.n_gqa() >= 4) {
             new_type = GGML_TYPE_Q5_K;
@@ -358,6 +362,12 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
                      : use_more_bits(i_layer, n_layer) ? GGML_TYPE_Q4_K
                      : GGML_TYPE_Q3_K;
         }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_HIFI_F32_RAW) {
+            // Adaptive Q3_HIFI_F32_RAW: same strategy as Q3_HIFI but with FP32 outliers
+            new_type = i_layer < n_layer/3 ? GGML_TYPE_Q3_HIFI_F32_RAW
+                     : use_more_bits(i_layer, n_layer) ? GGML_TYPE_Q4_K
+                     : GGML_TYPE_Q3_K;
+        }
         else if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_M && (i_layer < n_layer/8 ||
                     (qs.model.hparams.n_expert == 8 && use_more_bits(i_layer, n_layer)))) {
             new_type = GGML_TYPE_Q4_K;
@@ -402,6 +412,7 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
                 else if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_XXS) new_type = GGML_TYPE_IQ3_S;
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_M ) new_type = GGML_TYPE_Q4_K;
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_HIFI) new_type = GGML_TYPE_Q4_K;
+                else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_HIFI_F32_RAW) new_type = GGML_TYPE_Q4_K;
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_L ) new_type = GGML_TYPE_Q5_K;
                 else if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_M  ) new_type = GGML_TYPE_Q4_K;
             }
@@ -411,7 +422,7 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
     }
     else if (name.find("attn_qkv.weight") != std::string::npos) {
         if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_M || ftype == LLAMA_FTYPE_MOSTLY_Q3_K_L || ftype == LLAMA_FTYPE_MOSTLY_IQ3_M ||
-            ftype == LLAMA_FTYPE_MOSTLY_Q3_HIFI) {
+            ftype == LLAMA_FTYPE_MOSTLY_Q3_HIFI || ftype == LLAMA_FTYPE_MOSTLY_Q3_HIFI_F32_RAW) {
             new_type = GGML_TYPE_Q4_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_K_M) new_type = GGML_TYPE_Q5_K;
@@ -584,7 +595,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         case LLAMA_FTYPE_MOSTLY_IQ3_S:   default_type = GGML_TYPE_IQ3_S;   break;
         case LLAMA_FTYPE_MOSTLY_IQ3_M:   default_type = GGML_TYPE_IQ3_S;   break;
         case LLAMA_FTYPE_MOSTLY_Q3_HIFI: default_type = GGML_TYPE_Q3_K;    break; // Adaptive: Q3_K base, Q3_HIFI on sensitive layers
-        case LLAMA_FTYPE_MOSTLY_Q3_HIFI_F32_RAW: default_type = GGML_TYPE_Q3_HIFI_F32_RAW; break; // Phase 0: uniform FP32 outliers for validation
+        case LLAMA_FTYPE_MOSTLY_Q3_HIFI_F32_RAW: default_type = GGML_TYPE_Q3_K; break; // Adaptive: Q3_K base, Q3_HIFI_F32_RAW on sensitive layers
 
         default: throw std::runtime_error(format("invalid output file type %d\n", ftype));
     }

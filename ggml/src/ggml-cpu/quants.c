@@ -650,7 +650,7 @@ void ggml_vec_dot_q3_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs
 // Note: ggml_vec_dot_q3_hifi_q8_K is defined in arch-specific files (x86/quants.c etc.)
 
 // Q3_HIFI_F32_RAW vec_dot: Generic implementation
-// Same as Q3_HIFI but with 6 FP32 outliers instead of 8 FP16
+// Same as Q3_HIFI but with FP32 outliers instead of FP16
 void ggml_vec_dot_q3_hifi_f32_raw_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % Q3_HIFI_F32_BLOCK_SIZE == 0);
     assert(nrc == 1);
@@ -719,17 +719,14 @@ void ggml_vec_dot_q3_hifi_f32_raw_q8_K_generic(int n, float * GGML_RESTRICT s, s
 
         total_sum += d * (float)sumi;
 
-        // Add outlier corrections - unrolled for 6 FP32 outliers
+        // Add outlier corrections for FP32 outliers
         const float yd = yb->d;
         const uint8_t * GGML_RESTRICT o_idx = xb->outlier_idx;
         const float * GGML_RESTRICT o_vals = xb->outlier_vals;  // FP32 - no conversion needed!
 
-        total_sum += o_vals[0] * yb->qs[o_idx[0]] * yd;
-        total_sum += o_vals[1] * yb->qs[o_idx[1]] * yd;
-        total_sum += o_vals[2] * yb->qs[o_idx[2]] * yd;
-        total_sum += o_vals[3] * yb->qs[o_idx[3]] * yd;
-        total_sum += o_vals[4] * yb->qs[o_idx[4]] * yd;
-        total_sum += o_vals[5] * yb->qs[o_idx[5]] * yd;
+        for (int k = 0; k < Q3_HIFI_F32_OUTLIERS; ++k) {
+            total_sum += o_vals[k] * yb->qs[o_idx[k]] * yd;
+        }
     }
 
     *s = total_sum;

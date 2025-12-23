@@ -1424,7 +1424,7 @@ size_t quantize_q3_hifi(const float * GGML_RESTRICT src, void * GGML_RESTRICT ds
 }
 
 // ====================== Q3_HIFI_F32_RAW: Phase 0 validation format with FP32 outliers ======================
-// Uses 6 FP32 outliers instead of 8 FP16 outliers for maximum precision validation
+// Uses 8 FP32 outliers (same count as Q3_HIFI) for maximum precision validation
 // Block size: 110 (Q3_K base) + 6 (indices) + 24 (FP32 values) = 140 bytes
 
 void quantize_row_q3_hifi_f32_raw_ref(const float * GGML_RESTRICT x, block_q3_hifi_f32_raw * GGML_RESTRICT y, int64_t k) {
@@ -1435,7 +1435,7 @@ void quantize_row_q3_hifi_f32_raw_ref(const float * GGML_RESTRICT x, block_q3_hi
         const float * xb = x + ib * Q3_HIFI_F32_BLOCK_SIZE;
         block_q3_hifi_f32_raw * block = &y[ib];
 
-        // Step 1: Find top-6 outliers by magnitude
+        // Step 1: Find top outliers by magnitude
         float mag[Q3_HIFI_F32_BLOCK_SIZE];
         for (int i = 0; i < Q3_HIFI_F32_BLOCK_SIZE; ++i) {
             mag[i] = fabsf(xb[i]);
@@ -1490,7 +1490,7 @@ static void quantize_row_q3_hifi_f32_raw_impl(const float * GGML_RESTRICT x, blo
         const float * qw = quant_weights ? quant_weights + ib * Q3_HIFI_F32_BLOCK_SIZE : NULL;
         block_q3_hifi_f32_raw * block = &y[ib];
 
-        // Step 1: Find top-6 outliers by imatrix-weighted magnitude
+        // Step 1: Find top outliers by imatrix-weighted magnitude
         float mag[Q3_HIFI_F32_BLOCK_SIZE];
         for (int i = 0; i < Q3_HIFI_F32_BLOCK_SIZE; ++i) {
             mag[i] = fabsf(xb[i]) * (qw ? qw[i] : 1.0f);

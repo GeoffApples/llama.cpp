@@ -39,19 +39,20 @@ def download_codeparrot(output_file="codeparrot-2.5k.txt", num_samples=2500) -> 
 
 
 def download_wikitext(output_file="wikitext-5k.txt", num_lines=5000) -> tuple[str, int, bool]:
-    """Download WikiText samples. Returns (filename, actual_count, uses_separator)."""
+    """Download WikiText samples. Returns (filename, expected_count, uses_separator)."""
     print(f"Downloading WikiText dataset ({num_lines} lines)...")
-    ds = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
+    ds = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
     count = 0
     with open(output_file, 'w') as f:
-        for i, line in enumerate(ds['text']):
-            if i >= num_lines:
+        for item in ds:
+            if count >= num_lines:
                 break
+            line = cast(dict[str, Any], item)['text']
             if line.strip():
                 f.write(line.strip() + '\n')
                 count += 1
     print(f"  Saved to {output_file}")
-    return output_file, count, False
+    return output_file, num_lines, False
 
 
 def verify_file(filename: str, expected: int, uses_separator: bool) -> bool:

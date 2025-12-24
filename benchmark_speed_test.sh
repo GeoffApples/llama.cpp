@@ -55,11 +55,11 @@ done
 
 # Configuration
 LLAMA_BENCH="./build/bin/llama-bench"
-declare -a MODEL_NAMES=("Q3_K_S" "Q3_K_M" "Q3_HIFI")
+declare -a MODEL_NAMES=("Q4_K_S" "Q4_K_M" "Q4_HIFI")
 declare -a MODEL_PATHS=(
-    "./Qwen3-0.6B-f16:Q3_K_S.gguf"
-    "./Qwen3-0.6B-f16:Q3_K_M.gguf"
-    "./Qwen3-0.6B-f16:Q3_HIFI.gguf"
+    "./Qwen3-0.6B-f16:Q4_K_S.gguf"
+    "./Qwen3-0.6B-f16:Q4_K_M.gguf"
+    "./Qwen3-0.6B-f16:Q4_HIFI.gguf"
 )
 
 # Colors
@@ -106,7 +106,7 @@ print_dash() {
 
 echo -e "${CYAN}"
 print_line
-echo "QWEN3-14B QUANTIZATION SPEED BENCHMARK"
+echo "QWEN3-0.6B QUANTIZATION SPEED BENCHMARK"
 print_line
 echo -e "${NC}"
 
@@ -167,7 +167,7 @@ for ((i = 1; i <= ITERATIONS; i++)); do
         
         # Parse output - look for tg (token generation) speed
         # Format: | model | size | params | backend | threads | test | t/s |
-        # Example: | qwen3 4B Q3_K - Small | 948.91 MiB | 2.03 B | CPU | 4 | tg20 | 28.87 ± 1.45 |
+        # Example: | qwen3 0.6B Q4_K - Small | 948.91 MiB | 2.03 B | CPU | 4 | tg20 | 28.87 ± 1.45 |
         found=false
         
         while IFS= read -r line; do

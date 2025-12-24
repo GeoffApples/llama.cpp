@@ -425,8 +425,9 @@ extern "C" {
         // GGML_TYPE_IQ4_NL_4_8 = 37,
         // GGML_TYPE_IQ4_NL_8_8 = 38,
         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
-        GGML_TYPE_Q3_HIFI = 40, // Q3_HIFI: Q3_K layout + 6 FP16 outliers per block
-        GGML_TYPE_COUNT   = 41,
+        GGML_TYPE_Q3_HIFI = 40, // Q3_HIFI: Q3_K layout + 8 FP16 outliers per block
+        GGML_TYPE_Q4_HIFI = 41, // Q4_HIFI: Q4_K layout + adaptive FP16 outliers (8-32) per block
+        GGML_TYPE_COUNT   = 42,
     };
 
     // precision

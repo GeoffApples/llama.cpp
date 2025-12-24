@@ -2,6 +2,7 @@
 #include "llama-impl.h"
 #include "llama-model.h"
 #include "llama-model-loader.h"
+#include "ggml-quants.h"
 
 #include <algorithm>
 #include <cmath>
@@ -76,6 +77,34 @@ static std::string remap_imatrix (const std::string & orig_name, const std::map<
     return orig_name;
 }
 
+// ====================== Q4_HIFI Parameter-Based Outlier Selection ======================
+// Outlier counts scale with model size - larger models need more outliers to preserve quality
+// Massive layers (lm_head, token_embd, output) get 2× the base outlier count
+
+static int q4_hifi_get_base_outliers(int64_t param_count) {
+    if (param_count <= 3000000000LL)  return 8;   // ≤3B:    8 outliers
+    if (param_count <= 30000000000LL) return 10;  // 3B-30B: 10 outliers
+    if (param_count <= 70000000000LL) return 12;  // 30B-70B: 12 outliers
+    return 16;                                     // >70B:   16 outliers
+}
+
+static int q4_hifi_get_massive_outliers(int64_t param_count) {
+    return q4_hifi_get_base_outliers(param_count) * 2;
+}
+
+// Check if a tensor is a "massive" layer that benefits from extra outliers
+static bool q4_hifi_is_massive_tensor(const std::string & name) {
+    // Output/lm_head tensors - critical for vocabulary prediction
+    if (name.find("output.weight") != std::string::npos) return true;
+    if (name.find("lm_head") != std::string::npos) return true;
+    
+    // Token embeddings - first layer, high impact on all downstream
+    if (name.find("token_embd.weight") != std::string::npos) return true;
+    if (name.find("tok_embeddings") != std::string::npos) return true;
+    
+    return false;
+}
+
 struct quantize_state_impl {
     const llama_model                 & model;
     const llama_model_quantize_params * params;
@@ -97,10 +126,33 @@ struct quantize_state_impl {
     // used to figure out if a model shares tok_embd with the output weight
     bool has_output = false;
 
+    // Q4_HIFI: parameter-based adaptive outlier counts
+    int64_t total_params = 0;
+    int q4_hifi_base_outliers = 16;
+    int q4_hifi_massive_outliers = 32;
+
     quantize_state_impl(const llama_model & model, const llama_model_quantize_params * params)
         : model(model)
         , params(params)
         {}
+    
+    // Initialize Q4_HIFI outlier counts based on total parameter count
+    void init_q4_hifi_outliers(int64_t param_count) {
+        total_params = param_count;
+        q4_hifi_base_outliers = q4_hifi_get_base_outliers(param_count);
+        q4_hifi_massive_outliers = q4_hifi_get_massive_outliers(param_count);
+        
+        LLAMA_LOG_INFO("%s: Q4_HIFI detected %.2fB parameters -> base=%d, massive=%d outliers\n",
+                       __func__, param_count / 1e9, q4_hifi_base_outliers, q4_hifi_massive_outliers);
+    }
+    
+    // Get outlier count for a specific tensor
+    int get_q4_hifi_outliers(const std::string & tensor_name) const {
+        if (q4_hifi_is_massive_tensor(tensor_name)) {
+            return q4_hifi_massive_outliers;
+        }
+        return q4_hifi_base_outliers;
+    }
 };
 
 static void llama_tensor_dequantize_impl(
@@ -584,6 +636,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         case LLAMA_FTYPE_MOSTLY_IQ3_S:   default_type = GGML_TYPE_IQ3_S;   break;
         case LLAMA_FTYPE_MOSTLY_IQ3_M:   default_type = GGML_TYPE_IQ3_S;   break;
         case LLAMA_FTYPE_MOSTLY_Q3_HIFI: default_type = GGML_TYPE_Q3_K;    break; // Adaptive: Q3_K base, Q3_HIFI on sensitive layers
+        case LLAMA_FTYPE_MOSTLY_Q4_HIFI: default_type = GGML_TYPE_Q4_HIFI; break; // Parameter-driven adaptive outliers
 
         default: throw std::runtime_error(format("invalid output file type %d\n", ftype));
     }
@@ -710,10 +763,17 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         });
     }
 
+    // Count total parameters and gather tensor info
+    int64_t total_param_count = 0;
     for (const auto * it : tensors) {
         const struct ggml_tensor * tensor = it->tensor;
 
         const std::string name = ggml_get_name(tensor);
+        
+        // Count parameters (number of elements in weight tensors)
+        if (name.find(".weight") != std::string::npos) {
+            total_param_count += ggml_nelements(tensor);
+        }
 
         // TODO: avoid hardcoded tensor names - use the TN_* constants
         if (name.find("attn_v.weight")   != std::string::npos ||
@@ -723,6 +783,11 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         } else if (name == LLM_TN(model.arch)(LLM_TENSOR_OUTPUT, "weight")) {
             qs.has_output = true;
         }
+    }
+    
+    // Initialize Q4_HIFI parameter-based outlier counts
+    if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
+        qs.init_q4_hifi_outliers(total_param_count);
     }
 
     qs.n_ffn_down = qs.n_ffn_gate = qs.n_ffn_up = (int)model.hparams.n_layer;
@@ -971,7 +1036,14 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                 f32_data = (float *) f32_conv_buf.data();
             }
 
-            LLAMA_LOG_INFO("converting to %s .. ", ggml_type_name(new_type));
+            // Q4_HIFI: Set per-tensor outlier count before quantization
+            if (new_type == GGML_TYPE_Q4_HIFI) {
+                int outliers = qs.get_q4_hifi_outliers(name);
+                ggml_q4_hifi_set_outlier_count(outliers);
+                LLAMA_LOG_INFO("converting to %s (%d outliers) .. ", ggml_type_name(new_type), outliers);
+            } else {
+                LLAMA_LOG_INFO("converting to %s .. ", ggml_type_name(new_type));
+            }
             fflush(stdout);
 
             if (work.size() < (size_t)nelements * 4) {

@@ -106,6 +106,15 @@ GGML_API void iq3xs_free_impl(int grid_size);
 GGML_API void dequantize_row_q3_hifi(const block_q3_hifi * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API size_t quantize_q3_hifi(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 
+// Q4_HIFI: Q4_K with adaptive outliers (8-32 FP16 values per block)
+GGML_API void quantize_row_q4_hifi_ref(const float * GGML_RESTRICT x, block_q4_hifi * GGML_RESTRICT y, int64_t k, int outlier_count);
+GGML_API void dequantize_row_q4_hifi(const block_q4_hifi * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+GGML_API size_t quantize_q4_hifi(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
+
+// Q4_HIFI outlier count management (set before quantization)
+GGML_API void   ggml_q4_hifi_set_outlier_count(int count);
+GGML_API int    ggml_q4_hifi_get_outlier_count(void);
+
 #ifdef __cplusplus
 }
 #endif

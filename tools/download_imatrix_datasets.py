@@ -8,7 +8,7 @@ from datasets import load_dataset
 SAMPLE_SEPARATOR = "<|endofsample|>"
 
 
-def download_mathqa(output_file="mathqa-2.5k.txt", num_samples=2500) -> tuple[str, int, bool]:
+def download_mathqa(output_file="mathqa.txt", num_samples=5000) -> tuple[str, int, bool]:
     """Download MathQA problems. Returns (filename, expected_count, uses_separator)."""
     print(f"Downloading MathQA dataset ({num_samples} samples)...")
     ds = load_dataset('allenai/math_qa', revision='refs/convert/parquet', split='train')
@@ -21,7 +21,7 @@ def download_mathqa(output_file="mathqa-2.5k.txt", num_samples=2500) -> tuple[st
     return output_file, num_samples, False
 
 
-def download_codeparrot(output_file="codeparrot-2.5k.txt", num_samples=2500) -> tuple[str, int, bool]:
+def download_codeparrot(output_file="codeparrot.txt", num_samples=5000) -> tuple[str, int, bool]:
     """Download CodeParrot code snippets. Returns (filename, expected_count, uses_separator)."""
     print(f"Downloading CodeParrot dataset ({num_samples} samples)...")
     ds = load_dataset('codeparrot/codeparrot-valid-v2-near-dedup', split='train', streaming=True)
@@ -38,10 +38,10 @@ def download_codeparrot(output_file="codeparrot-2.5k.txt", num_samples=2500) -> 
     return output_file, num_samples, True
 
 
-def download_wikitext(output_file="wikitext-5k.txt", num_lines=5000) -> tuple[str, int, bool]:
+def download_wikitext(output_file="wikitext.txt", num_lines=10000) -> tuple[str, int, bool]:
     """Download WikiText samples. Returns (filename, expected_count, uses_separator)."""
     print(f"Downloading WikiText dataset ({num_lines} lines)...")
-    ds = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
+    ds = load_dataset('wikitext', 'wikitext-103-raw-v1', split='train')
     count = 0
     with open(output_file, 'w') as f:
         for item in ds:

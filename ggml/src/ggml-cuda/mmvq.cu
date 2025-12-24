@@ -18,6 +18,7 @@ static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type) 
         case GGML_TYPE_Q2_K:    return vec_dot_q2_K_q8_1;
         case GGML_TYPE_Q3_K:    return vec_dot_q3_K_q8_1;
         case GGML_TYPE_Q3_HIFI: return vec_dot_q3_hifi_q8_1;
+        case GGML_TYPE_Q4_HIFI: return nullptr;  // Uses dequantization path for now
         case GGML_TYPE_Q4_K:    return vec_dot_q4_K_q8_1;
         case GGML_TYPE_Q5_K:    return vec_dot_q5_K_q8_1;
         case GGML_TYPE_Q6_K:    return vec_dot_q6_K_q8_1;
@@ -45,6 +46,7 @@ static constexpr __device__ int get_vdr_mmvq(ggml_type type) {
         case GGML_TYPE_Q2_K:    return VDR_Q2_K_Q8_1_MMVQ;
         case GGML_TYPE_Q3_K:    return VDR_Q3_K_Q8_1_MMVQ;
         case GGML_TYPE_Q3_HIFI: return VDR_Q3_K_Q8_1_MMVQ;  // Same as Q3_K
+        case GGML_TYPE_Q4_HIFI: return VDR_Q4_K_Q8_1_MMVQ;  // Same as Q4_K
         case GGML_TYPE_Q4_K:    return VDR_Q4_K_Q8_1_MMVQ;
         case GGML_TYPE_Q5_K:    return VDR_Q5_K_Q8_1_MMVQ;
         case GGML_TYPE_Q6_K:    return VDR_Q6_K_Q8_1_MMVQ;

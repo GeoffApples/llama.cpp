@@ -1,205 +1,241 @@
-## 🗺️ **Q4_HIFI Roadmap: Adaptive Quantization for All Model Sizes**
+# 🗺️ **Q4_HIFI Roadmap: Adaptive Outlier-Aware Quantization**
 
-### 🎯 **Mission Statement** 
-> **Build an intelligent 4.3–4.5 BPW quantization that automatically optimizes for any model size (0.5B–200B+), beating Q4_K_M in quality, size, and speed through parameter-driven, adaptive outlier preservation.**
+> **Goal**: Deliver a **4.3–4.5 BPW quantization format that beats Q4_K_M in quality while matching its speed and size**, with **automatic model-aware optimization** for models from 0.5B to 123B parameters.
 
 ---
 
-## 🔬 **Phase 1: Intelligent Baseline (2–3 days)** 
-**Objective**: Implement **automatic model detection + adaptive quantization** that works out-of-the-box for any GGUF model.
+## 🔬 **Phase 1: Intelligent Baseline (COMPLETED ✅)**
 
-### ✅ **Core Components**
-1. **Parameter Counting (Primary Decision Point)** 
-   - Sum all tensor element counts from GGUF metadata
-   - Use parameter count directly for outlier scaling — no architecture lookup needed
-   - Works automatically for any model, known or unknown
+### 📊 **Phase 1 Results (Qwen3-0.6B)**
+| Metric | Q4_K_S | Q4_K_M | **Q4_HIFI** |
+|--------|--------|--------|-------------|
+| **PPL** | 24.55 | 23.69 | **23.34** ✅ |
+| **Speed** | 632 t/s | 624 t/s | 265 t/s ❌ |
+| **Size** | 443 MiB | 456 MiB | 664 MiB ❌ |
+| **BPW** | 4.95 | 5.09 | 7.41 ❌ |
 
-2. **Parameter-Based Outlier Scaling** 
-   ```c
-   // Universal parameter-based outlier selection
-   static int get_base_outliers(int64_t param_count) {
-       if (param_count <= 3e9)  return 8;   // ≤3B:    8 outliers
-       if (param_count <= 30e9) return 10;  // 3B-30B: 10 outliers
-       if (param_count <= 70e9) return 12;  // 30B-70B: 12 outliers
-       return 16;                            // >70B:   16 outliers
-   }
+**Key Insight**: Quality works ✅, but **over-application and lack of optimized kernels** cause speed/size issues.
+
+---
+
+## ⚡ **Phase 2: Production Optimization (IN PROGRESS)**
+
+### 🎯 **Objective**: Fix speed/size while preserving quality advantage.
+
+---
+
+### 🔧 **2.1 Hybrid Tensor Mixing** *(Priority: 🔥)*
+
+**Problem**: Applying Q4_HIFI to **all tensors** wastes resources. 
+**Solution**: Apply only to **critical layers**.
+
+#### ✅ **Code: Tensor-Type Selection (`llama.cpp`)**
+```cpp
+// In quantization logic
+ggml_type quantize_tensor(const char* name, ggml_type default_type) {
+    const char* critical[] = {
+        "lm_head", "token_embd", "embed_tokens",
+        "attn_v", "ffn_down", "ffn_gate"
+    };
    
-   // Massive layers always get 2× base outliers
-   static int get_massive_outliers(int64_t param_count) {
-       return get_base_outliers(param_count) * 2;
-   }
-   ```
+    for (const char* pattern : critical) {
+        if (strstr(name, pattern)) return GGML_TYPE_Q4_HIFI;
+    }
+    return default_type; // Q4_K_M for others
+}
+```
 
-3. **Tensor Classification (Architecture-Agnostic)** 
-   - **Massive layers**: Pattern match `lm_head`, `token_embd`, `output` → 2× outliers
-   - **Standard layers**: All other weight tensors → base outliers
-   - **Skip**: Biases, norms, embeddings (other than token_embd)
-
-4. **Optional Architecture Hints** 
-   - Extract `general.architecture` for logging/diagnostics only
-   - NOT used for outlier decisions — parameter count is sufficient
-   - Useful for identifying MoE models (may want extra outliers on `ffn_gate`)
-
-### ✅ **Implementation Steps**
-1. Add `gguf_get_total_parameter_count()` to count all tensor elements
-2. Implement `get_base_outliers()` and `get_massive_outliers()` using parameter thresholds
-3. Add `is_massive_tensor()` pattern matcher for `lm_head`, `token_embd`, `output`
-4. Create `quantize_state` struct with `param_count`, `base_outliers`, `massive_outliers`
-5. Define `Q4_HIFI` block with **32 outlier slots** (fixed size for GPU compatibility, supports up to >70B models)
-6. Implement quantization that selects outlier count per-tensor based on tensor name
-
-### 📈 **Success Criteria**
-- ✅ **Automatic scaling**: Any >70B model → 16 base, 32 massive outliers
-- ✅ **Automatic scaling**: Any ≤3B model → 8 base, 16 massive outliers
-- ✅ **Architecture-agnostic**: Works identically for Llama, Qwen, Mistral, DeepSeek, etc.
-- ✅ **Zero manual configuration** required — parameter count drives everything
-- ✅ **Baseline PPL** ≤ Q4_K_M on all tested models
-- ✅ **Future-proof**: New architectures work automatically without code changes
+#### 📊 **Expected Impact**
+- **Size**: 664 MiB → **470 MiB** (matches Q4_K_M)
+- **Quality**: **Unchanged** (23.34 PPL)
+- **Speed**: Minor improvement (less outlier work)
 
 ---
 
-## ⚡ **Phase 2: GPU-Optimized Performance (2–3 days)** 
-**Objective**: Achieve **≥95% of Q4_K_M speed** on GPU while maintaining quality advantage.
+### 🔧 **2.2 CPU AVX2 vec_dot Kernel** *(Priority: 🔥)*
 
-### ✅ **Core Components**
-1. **GPU Transcoding Kernel** 
-   - Convert `Q4_HIFI` → `Q4_K` layout on GPU load 
-   - Reuse battle-tested `Q4_K_CUDA` kernel
+**Problem**: Using slow dequantization fallback. 
+**Solution**: Optimized SIMD kernel.
 
-2. **Outlier Correction Kernel** 
-   - Minimal overhead: 16–32 outliers per block 
-   - Coalesced memory access for massive layers
-
-3. **CPU SIMD Optimization** 
-   - `vec_dot_q4_hifi_q8_K_avx2` with Q4_K bulk + outlier loop 
-   - Outlier skipping for `|q8_val| < threshold`
-
-### ✅ **Implementation Steps**
-1. Add `k_q4_hifi_to_gpu` transcoding kernel to `ggml-cuda.cu`
-2. Implement `k_add_outlier_correction_q4_hifi` with adaptive count
-3. Integrate into matmul pipeline with proper memory management
-4. Add CPU AVX2 kernel with outlier skipping optimization
-
-### 📈 **Target Metrics (Distrill-123B)**
-| Metric | Q4_K_M | Q4_HIFI Target |
-|--------|--------|----------------|
-| **GPU Speed** | 817 tok/s | **≥780 tok/s** |
-| **CPU Speed** | 120 tok/s | **≥110 tok/s** |
-| **VRAM Overhead** | 0% | **≤2%** |
-
----
-
-## 🧠 **Phase 3: Large-Model Specialization (2 days)** 
-**Objective**: Maximize quality gain on **70B–123B models** through domain-optimized strategies.
-
-### ✅ **Core Components**
-1. **Domain-Mixed Imatrix** 
-   - 40% Wikitext, 30% Code, 30% Math for 123B models 
-   - Automatic dataset selection based on architecture
-
-2. **Massive Layer Optimization** 
-   - **32 outliers for `lm_head`/`token_embd`** (128K vocab × 123B params) 
-   - **Pre-zeroing** in Q8_K activations for faster outlier correction
-
-3. **Hybrid Tensor Strategy** 
-   ```bash
-   --tensor-type lm_head=Q4_HIFI      # 32 outliers
-   --tensor-type token_embd=Q4_HIFI   # 32 outliers 
-   --tensor-type ffn_gate=Q4_HIFI     # 16 outliers (MoE critical)
-   --tensor-type ffn_down=Q4_HIFI     # 16 outliers
-   --tensor-type attn_v=Q4_HIFI       # 16 outliers
-   --tensor-type ffn_up=Q4_HIFI       # 16 outliers
-   ```
-
-### ✅ **Implementation Steps**
-1. Create domain-mixed imatrix generation script
-2. Enhance `get_tensor_outlier_count()` for architecture-specific rules
-3. Implement pre-zeroing in Q8_K quantization for `Q4_HIFI` tensors
-4. Test on Distrill-123B with HumanEval + MATH benchmarks
-
-### 📈 **Target Metrics (Distrill-123B)**
-| Metric | Q4_K_M | Q4_HIFI Target |
-|--------|--------|----------------|
-| **Wikitext PPL** | 11.94 | **≤11.6** |
-| **HumanEval pass@1** | 35.2% | **≥38.0%** |
-| **File Size** | 60.2 GiB | **≤58.5 GiB** |
-
----
-
-## 📊 **Expected Outcomes by Parameter Count**
-
-*Outlier counts are determined solely by parameter count — architecture is irrelevant.*
-
-| Parameter Count | Base Outliers | Massive Outliers | Expected PPL Gain |
-|-----------------|---------------|------------------|-------------------|
-| **≤3B** | 8 | 16 | +0.1–0.2 |
-| **3B–30B** | 10 | 20 | +0.2–0.3 |
-| **30B–70B** | 12 | 24 | +0.3–0.4 |
-| **>70B** | **16** | **32** | **+0.4–0.6** |
-
----
-
-## 🔧 **Technical Implementation Details**
-
-### **Block Format (Fixed Size for GPU)**
+#### ✅ **Code: `ggml-cpu/quants.c`**
 ```c
-typedef struct {
-    uint8_t qs[128];           // Q4_K core (128 bytes)
-    uint8_t scales[32];        // Q4_K scales (32 bytes) 
-    ggml_fp16_t d;             // Q4_K scale (2 bytes)
-    uint8_t outlier_count;     // Actual count: 8-32 depending on model size (1 byte)
-    uint8_t outlier_idx[32];   // Padded to max for >70B massive layers (32 bytes)
-    ggml_fp16_t outlier_vals[32]; // Padded to max (64 bytes)
-} block_q4_hifi; // Total: 259 bytes max (but outlier slots often unused)
-// Effective BPW: 4.3-4.5 (actual outliers << max slots for most layers)
+#ifdef __AVX2__
+void ggml_vec_dot_q4_hifi_q8_K(
+    const int n, float* s,
+    const void* vx, const void* vy
+) {
+    const block_q4_hifi* x = (const block_q4_hifi*)vx;
+    const block_q8_K* y = (const block_q8_K*)vy;
+    const int nb = n / QK_K;
+    float sumf = 0.0f;
+
+    for (int i = 0; i < nb; ++i) {
+        // Reuse Q4_K bulk kernel
+        float bulk_sum;
+        ggml_vec_dot_q4_K_q8_K(1, &bulk_sum, (block_q4_K*)&x[i], &y[i]);
+        sumf += bulk_sum;
+
+        // Add outliers
+        for (int k = 0; k < x[i].outlier_count; ++k) {
+            uint8_t idx = x[i].outlier_idx[k];
+            float w = GGML_FP16_TO_FP32(x[i].outlier_vals[k]);
+            sumf += w * y[i].qs[idx] * GGML_FP16_TO_FP32(y[i].d);
+        }
+    }
+    *s = sumf;
+}
+#endif
 ```
 
-### **Automatic Workflow**
+#### 📊 **Expected Impact**
+- **Speed**: 265 t/s → **550+ t/s** (+107%)
+- **Quality**: Unchanged
+
+---
+
+### 🔧 **2.3 GPU Transcoding + Async Streams** *(Priority: ⚡)*
+
+**Problem**: No GPU acceleration. 
+**Solution**: Transcode to Q4_K layout + outlier correction.
+
+#### ✅ **Code: `ggml-cuda.cu`**
+```cuda
+// Transient GPU block
+struct block_q4_hifi_gpu {
+    uint8_t qs[128], scales[32];
+    half d;
+    uint8_t outlier_count, outlier_idx[16];
+    half outlier_vals[16];
+};
+
+__global__ void k_add_outlier_correction_q4_hifi(
+    const block_q4_hifi_gpu* x,
+    const block_q8_K* y,
+    float* dst, int nb
+) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= nb) return;
+   
+    float corr = 0.0f, d8 = __half2float(y[i].d);
+    for (int k = 0; k < x[i].outlier_count; ++k) {
+        corr += __half2float(x[i].outlier_vals[k]) *
+                y[i].qs[x[i].outlier_idx[k]] * d8;
+    }
+    dst[i] += corr;
+}
+
+void ggml_cuda_mul_mat_q4_hifi(...) {
+    // 1. Transcode to GPU block
+    k_q4_hifi_to_gpu<<<grid, block, 0, stream>>>(src, gpu_block, nb);
+   
+    // 2. Run Q4_K kernel (full speed!)
+    ggml_cuda_mul_mat_q4_K_stream((block_q4_K*)gpu_block, ...);
+   
+    // 3. Add outliers
+    k_add_outlier_correction_q4_hifi<<<grid, block, 0, stream>>>(...);
+}
+```
+
+#### 📊 **Expected Impact (Distrill-123B)**
+- **GPU Speed**: Matches Q4_K_M (800+ t/s)
+- **VRAM Overhead**: <2%
+- **Quality**: Preserved
+
+---
+
+## 🧠 **Phase 3: Large-Model Specialization**
+
+### 🎯 **Objective**: Maximize gains on 70B–123B models.
+
+---
+
+### 🔧 **3.1 Adaptive Outlier Counting**
+
+#### ✅ **Code: Model Classification (`ggml-quants.c`)**
+```c
+static void classify_model(int64_t params, const char* arch,
+                          int* base_out, int* massive_out) {
+    if (params <= 1000000000LL) {      // ≤1B
+        *base_out = 8; *massive_out = 16;
+    } else if (params <= 30000000000LL) { // ≤30B
+        *base_out = 10; *massive_out = 20;
+    } else {                             // >30B (123B)
+        *base_out = 16; *massive_out = 32;
+    }
+}
+```
+
+---
+
+### 🔧 **3.2 Domain-Mixed Imatrix**
+
+**For 123B models, use mixed calibration data**:
 ```bash
-# User runs single command - everything auto-detected
-./llama-quantize model-f16.gguf model-q4hifi.gguf Q4_HIFI
+# 40% Wikitext, 30% Code, 30% Math
+python create_mixed_imatrix_dataset.py \
+  --wikitext wikitext-10k.txt \
+  --code codeparrot-5k.txt \
+  --math mathqa-5k.txt \
+  --output mixed-10k.txt
 
-# System automatically:
-# 1. Counts total parameters from GGUF tensor metadata
-# 2. Selects outlier counts based on parameter thresholds:
-#    - 123B model → 16 base, 32 massive (>70B tier)
-#    - 7B model   → 10 base, 20 massive (3B-30B tier)
-#    - 1B model   →  8 base, 16 massive (≤3B tier)
-# 3. Identifies massive tensors by name pattern (lm_head, token_embd, output)
-# 4. Applies appropriate outlier count per-tensor
-# 5. Uses domain-mixed imatrix if available
+./llama-perplexity -m model-f16.gguf -f mixed-10k.txt --keep-imatrix
 ```
+
+---
+
+## 📊 **Expected Final Results**
+
+| Model | Metric | Q4_K_M | **Q4_HIFI (Target)** |
+|-------|--------|--------|----------------------|
+| **Qwen-0.6B** | PPL | 23.69 | **23.34** |
+| | Speed | 624 t/s | **610 t/s** |
+| | Size | 456 MiB | **470 MiB** |
+| **Distrill-123B** | PPL | 11.94 | **≤11.6** |
+| | Speed | 817 t/s | **≥800 t/s** |
+| | Size | 60.2 GiB | **≤58.5 GiB** |
 
 ---
 
 ## 🚀 **Implementation Priority**
 
-| Priority | Phase | Why |
-|----------|-------|-----|
-| 🔥 **1** | **Phase 1 (Intelligent Baseline)** | Foundation for everything else |
-| ⚡ **2** | **Phase 2 (GPU Performance)** | Speed is non-negotiable for 123B |
-| 🧠 **3** | **Phase 3 (Large-Model Specialization)** | Competitive advantage on massive models |
+| Priority | Task | Timeline | Owner |
+|----------|------|----------|-------|
+| 🔥 **1** | Hybrid tensor mixing | 1 day | You |
+| 🔥 **2** | CPU AVX2 vec_dot | 2 days | You |
+| ⚡ **3** | GPU transcoding kernels | 3 days | You |
+| 🧠 **4** | Adaptive outlier logic | 1 day | You |
+| 🧪 **5** | Distrill-123B validation | 2 days | You |
 
 ---
 
 ## 💡 **Key Innovations**
 
-1. **Parameter-driven quantization** — no architecture tables to maintain, works for any model
-2. **Adaptive outlier allocation** scales automatically from 0.5B to 200B+ models 
-3. **Massive layer specialization** addresses 128K vocab bottleneck with 2× outliers
-4. **Domain-mixed imatrix** ensures outliers matter for math/code tasks 
-5. **GPU transcoding** maintains Q4_K_M speed while adding outlier precision
-6. **Future-proof design** — new architectures work immediately without code changes
+1. **First quantization format with automatic model-aware optimization**
+2. **Hybrid mixing** focuses resources where they matter most
+3. **GPU transcoding** delivers Q4_K_M speed with Q4_HIFI quality
+4. **Adaptive outlier counts** scale from 0.5B to 123B models
 
 ---
 
-## 🏁 **Success Definition**
+## ✅ **Success Criteria**
 
-**Q4_HIFI is ready when**: 
-✅ **123B class models**: PPL ≤11.6, Size ≤58.5 GiB, Speed ≥780 tok/s 
-✅ **Parameter-based detection** works for any GGUF model without architecture-specific code
-✅ **Zero configuration** required — users just specify `Q4_HIFI` 
-✅ **Beats Q4_K_M** on quality/size/speed across all model sizes
-✅ **Future-proof** — new model architectures work automatically
+**Q4_HIFI is ready when**:
+- ✅ **Qwen-0.6B**: PPL ≤23.4, Speed ≥600 t/s, Size ≤475 MiB
+- ✅ **Distrill-123B**: PPL ≤11.7, Speed ≥790 t/s, Size ≤59 GiB
+- ✅ **Automatic detection** works for all major architectures
+- ✅ **Zero configuration** required for users
 
-This roadmap delivers **the first truly intelligent quantization format** that **adapts to your model based on parameter count, not hardcoded architecture tables**.
+---
+
+## 📦 **Deliverables**
+
+- [x] **Phase 1**: Quality validation (completed)
+- [ ] **Phase 2**: Hybrid mixing + AVX2 kernel
+- [ ] **Phase 2**: GPU transcoding kernels 
+- [ ] **Phase 3**: Adaptive outlier logic
+- [ ] **Phase 3**: Distrill-123B validation
+- [ ] **Documentation**: `docs/quantization/Q4_HIFI.md`
+
+---
+
+This roadmap transforms Q4_HIFI from a **quality-focused prototype** into a **production-ready quantization format** that **dominates Q4_K_M across all model sizes**.

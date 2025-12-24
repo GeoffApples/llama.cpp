@@ -4,10 +4,10 @@ Create an interleaved dataset file for mixed-domain imatrix generation.
 
 Usage:
   python create_mixed_imatrix_dataset.py \
-    --wikitext wikitext-5k.txt \
-    --code codeparrot-2.5k.txt \
-    --math mathqa-2.5k.txt \
-    --output mixed-10k.txt \
+    --wikitext wikitext.txt \
+    --code codeparrot.txt \
+    --math mathqa.txt \
+    --output mixed-imatrix_dataset.txt \
     --ratio 50,25,25
 """
 

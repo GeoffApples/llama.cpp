@@ -1502,7 +1502,9 @@ void quantize_row_q4_hifi_ref(const float * GGML_RESTRICT x, block_q4_hifi * GGM
             block->outlier_idx[k_idx] = 0;
             block->outlier_vals[k_idx] = 0;
         }
-        block->padding = 0;
+        block->padding[0] = 0;
+        block->padding[1] = 0;
+        block->padding[2] = 0;
     }
 }
 
@@ -1568,7 +1570,9 @@ static void quantize_row_q4_hifi_impl(const float * GGML_RESTRICT x, block_q4_hi
             block->outlier_idx[k_idx] = 0;
             block->outlier_vals[k_idx] = 0;
         }
-        block->padding = 0;
+        block->padding[0] = 0;
+        block->padding[1] = 0;
+        block->padding[2] = 0;
     }
 }
 

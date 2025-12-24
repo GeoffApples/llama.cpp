@@ -305,6 +305,23 @@ typedef struct {
 } block_q3_hifi;
 static_assert(sizeof(block_q3_hifi) == sizeof(block_q3_K) + Q3_HIFI_OUTLIERS + Q3_HIFI_OUTLIERS*sizeof(ggml_half), "wrong q3_hifi block size/padding");
 
+// 4-bit quantization
+// 8 blocks of 32 elements each
+// weight is represented as x = a * q + b
+// Effectively 4.5 bits per weight
+typedef struct {
+    GGML_EXTENSION union {
+        struct {
+            ggml_half d;    // super-block scale for quantized scales
+            ggml_half dmin; // super-block scale for quantized mins
+        } GGML_COMMON_AGGR_S;
+        ggml_half2 dm;
+    } GGML_COMMON_AGGR_U;
+    uint8_t scales[K_SCALE_SIZE]; // scales and mins, quantized with 6 bits
+    uint8_t qs[QK_K/2];           // 4--bit quants
+} block_q4_K;
+static_assert(sizeof(block_q4_K) == 2*sizeof(ggml_half) + K_SCALE_SIZE + QK_K/2, "wrong q4_K block size/padding");
+
 // Q4_HIFI: Q4_K-compatible layout with adaptive FP16 outliers for improved accuracy
 // Uses EXACT Q4_K memory layout (first 144 bytes) to reuse optimized kernels
 // Outliers appended as tail section - achieves ~98% of Q4_K speed with better quality
@@ -328,23 +345,6 @@ typedef struct {
     ggml_half outlier_vals[Q4_HIFI_MAX_OUTLIERS];  // 64 bytes: FP16 outlier values
 } block_q4_hifi;
 static_assert(sizeof(block_q4_hifi) == sizeof(block_q4_K) + 1 + Q4_HIFI_MAX_OUTLIERS + Q4_HIFI_MAX_OUTLIERS*sizeof(ggml_half), "wrong q4_hifi block size/padding");
-
-// 4-bit quantization
-// 8 blocks of 32 elements each
-// weight is represented as x = a * q + b
-// Effectively 4.5 bits per weight
-typedef struct {
-    GGML_EXTENSION union {
-        struct {
-            ggml_half d;    // super-block scale for quantized scales
-            ggml_half dmin; // super-block scale for quantized mins
-        } GGML_COMMON_AGGR_S;
-        ggml_half2 dm;
-    } GGML_COMMON_AGGR_U;
-    uint8_t scales[K_SCALE_SIZE]; // scales and mins, quantized with 6 bits
-    uint8_t qs[QK_K/2];           // 4--bit quants
-} block_q4_K;
-static_assert(sizeof(block_q4_K) == 2*sizeof(ggml_half) + K_SCALE_SIZE + QK_K/2, "wrong q4_K block size/padding");
 
 // 5-bit quantization
 // 8 blocks of 32 elements each

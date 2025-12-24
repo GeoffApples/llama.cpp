@@ -18,7 +18,7 @@ static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type) 
         case GGML_TYPE_Q2_K:    return vec_dot_q2_K_q8_1;
         case GGML_TYPE_Q3_K:    return vec_dot_q3_K_q8_1;
         case GGML_TYPE_Q3_HIFI: return vec_dot_q3_hifi_q8_1;
-        case GGML_TYPE_Q4_HIFI: return nullptr;  // Uses dequantization path for now
+        case GGML_TYPE_Q4_HIFI: return vec_dot_q4_hifi_q8_1;
         case GGML_TYPE_Q4_K:    return vec_dot_q4_K_q8_1;
         case GGML_TYPE_Q5_K:    return vec_dot_q5_K_q8_1;
         case GGML_TYPE_Q6_K:    return vec_dot_q6_K_q8_1;

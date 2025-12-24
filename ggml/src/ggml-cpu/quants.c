@@ -741,10 +741,7 @@ void ggml_vec_dot_q4_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs
     *s = sumf;
 }
 
-// Wrapper for ggml_vec_dot_q4_hifi_q8_K - uses generic implementation
-void ggml_vec_dot_q4_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
-    ggml_vec_dot_q4_hifi_q8_K_generic(n, s, bs, vx, bx, vy, by, nrc);
-}
+// Note: ggml_vec_dot_q4_hifi_q8_K is defined in arch-specific files (x86/quants.c etc.)
 
 void ggml_vec_dot_q4_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % QK_K == 0);

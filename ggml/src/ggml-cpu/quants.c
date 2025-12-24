@@ -72,6 +72,15 @@ void quantize_row_q3_hifi(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy
     quantize_row_q3_hifi_ref(x, y, k);
 }
 
+void quantize_row_q4_hifi(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
+    assert(k % Q4_HIFI_BLOCK_SIZE == 0);
+    block_q4_hifi * GGML_RESTRICT y = vy;
+    // Use the global outlier count setting
+    int outlier_count = ggml_q4_hifi_get_outlier_count();
+    if (outlier_count <= 0) outlier_count = 16; // default
+    quantize_row_q4_hifi_ref(x, y, k, outlier_count);
+}
+
 // ====================== 4-bit (de)-quantization
 
 void quantize_row_q4_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
@@ -642,6 +651,100 @@ void ggml_vec_dot_q3_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs
 }
 
 // Note: ggml_vec_dot_q3_hifi_q8_K is defined in arch-specific files (x86/quants.c etc.)
+
+// Q4_HIFI vec_dot: Generic implementation
+// Uses Q4_K format for bulk, adds outlier corrections
+void ggml_vec_dot_q4_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(n % Q4_HIFI_BLOCK_SIZE == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_q4_hifi * GGML_RESTRICT x = vx;
+    const block_q8_K * GGML_RESTRICT y = vy;
+    const int nb = n / Q4_HIFI_BLOCK_SIZE;
+
+    static const uint32_t kmask1 = 0x3f3f3f3f;
+    static const uint32_t kmask2 = 0x0f0f0f0f;
+    static const uint32_t kmask3 = 0x03030303;
+
+    uint32_t utmp[4];
+
+    const uint8_t * scales = (const uint8_t*)&utmp[0];
+    const uint8_t * mins   = (const uint8_t*)&utmp[2];
+
+    int8_t  aux8[QK_K];
+    int16_t aux16[8];
+    float   sums [8];
+    int32_t aux32[8];
+    memset(sums, 0, 8*sizeof(float));
+
+    float sumf = 0;
+    for (int i = 0; i < nb; ++i) {
+        const block_q4_hifi * xb = &x[i];
+        const block_q8_K * yb = &y[i];
+
+        const uint8_t * GGML_RESTRICT q4 = xb->qs;
+        const  int8_t * GGML_RESTRICT q8 = yb->qs;
+        memset(aux32, 0, 8*sizeof(int32_t));
+        int8_t * GGML_RESTRICT a = aux8;
+        for (int j = 0; j < QK_K/64; ++j) {
+            for (int l = 0; l < 32; ++l) a[l] = (int8_t)(q4[l] & 0xF);
+            a += 32;
+            for (int l = 0; l < 32; ++l) a[l] = (int8_t)(q4[l]  >> 4);
+            a += 32; q4 += 32;
+        }
+        memcpy(utmp, xb->scales, 12);
+        utmp[3] = ((utmp[2] >> 4) & kmask2) | (((utmp[1] >> 6) & kmask3) << 4);
+        const uint32_t uaux = utmp[1] & kmask1;
+        utmp[1] = (utmp[2] & kmask2) | (((utmp[0] >> 6) & kmask3) << 4);
+        utmp[2] = uaux;
+        utmp[0] &= kmask1;
+
+        int sumi = 0;
+        for (int j = 0; j < QK_K/16; ++j) sumi += yb->bsums[j] * mins[j/2];
+        a = aux8;
+        int is = 0;
+        for (int j = 0; j < QK_K/32; ++j) {
+            int32_t scale = scales[is++];
+            for (int l = 0; l < 8; ++l) aux16[l] = q8[l] * a[l];
+            for (int l = 0; l < 8; ++l) aux32[l] += scale * aux16[l];
+            q8 += 8; a += 8;
+            for (int l = 0; l < 8; ++l) aux16[l] = q8[l] * a[l];
+            for (int l = 0; l < 8; ++l) aux32[l] += scale * aux16[l];
+            q8 += 8; a += 8;
+            for (int l = 0; l < 8; ++l) aux16[l] = q8[l] * a[l];
+            for (int l = 0; l < 8; ++l) aux32[l] += scale * aux16[l];
+            q8 += 8; a += 8;
+            for (int l = 0; l < 8; ++l) aux16[l] = q8[l] * a[l];
+            for (int l = 0; l < 8; ++l) aux32[l] += scale * aux16[l];
+            q8 += 8; a += 8;
+        }
+        const float d = GGML_CPU_FP16_TO_FP32(xb->d) * yb->d;
+        for (int l = 0; l < 8; ++l) sums[l] += d * aux32[l];
+        const float dmin = GGML_CPU_FP16_TO_FP32(xb->dmin) * yb->d;
+        sumf -= dmin * sumi;
+
+        // Add outlier corrections - loop through all used outliers
+        const float yd = yb->d;
+        const uint8_t outlier_count = xb->outlier_count;
+        const uint8_t * GGML_RESTRICT o_idx = xb->outlier_idx;
+        const ggml_fp16_t * GGML_RESTRICT o_vals = xb->outlier_vals;
+
+        for (int j = 0; j < outlier_count; ++j) {
+            sumf += GGML_FP16_TO_FP32(o_vals[j]) * yb->qs[o_idx[j]] * yd;
+        }
+    }
+    for (int l = 0; l < 8; ++l) sumf += sums[l];
+    *s = sumf;
+}
+
+// Wrapper for ggml_vec_dot_q4_hifi_q8_K - uses generic implementation
+void ggml_vec_dot_q4_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    ggml_vec_dot_q4_hifi_q8_K_generic(n, s, bs, vx, bx, vy, by, nrc);
+}
 
 void ggml_vec_dot_q4_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % QK_K == 0);

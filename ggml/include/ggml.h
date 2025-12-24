@@ -2653,6 +2653,10 @@ extern "C" {
                    int64_t   n_per_row,
                const float * imatrix);
 
+    // Q4_HIFI: set/get the number of outliers per block (8-32, adaptive based on model size)
+    GGML_API void ggml_q4_hifi_set_outlier_count(int count);
+    GGML_API int  ggml_q4_hifi_get_outlier_count(void);
+
 #ifdef __cplusplus
     // restrict not standard in C++
 #    if defined(__GNUC__)

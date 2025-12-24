@@ -2,7 +2,6 @@
 #include "llama-impl.h"
 #include "llama-model.h"
 #include "llama-model-loader.h"
-#include "ggml-quants.h"
 
 #include <algorithm>
 #include <cmath>

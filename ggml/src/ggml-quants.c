@@ -1497,11 +1497,12 @@ void quantize_row_q4_hifi_ref(const float * GGML_RESTRICT x, block_q4_hifi * GGM
             block->outlier_idx[k_idx] = (uint8_t)idx;
             block->outlier_vals[k_idx] = GGML_FP32_TO_FP16(xb[idx]);
         }
-        // Zero remaining outlier slots for deterministic output
+        // Zero remaining outlier slots and padding for deterministic output
         for (int k_idx = outlier_count; k_idx < Q4_HIFI_MAX_OUTLIERS; ++k_idx) {
             block->outlier_idx[k_idx] = 0;
             block->outlier_vals[k_idx] = 0;
         }
+        block->padding = 0;
     }
 }
 
@@ -1562,11 +1563,12 @@ static void quantize_row_q4_hifi_impl(const float * GGML_RESTRICT x, block_q4_hi
             block->outlier_idx[k_idx] = (uint8_t)idx;
             block->outlier_vals[k_idx] = GGML_FP32_TO_FP16(xb[idx]);
         }
-        // Zero remaining outlier slots
+        // Zero remaining outlier slots and padding
         for (int k_idx = outlier_count; k_idx < Q4_HIFI_MAX_OUTLIERS; ++k_idx) {
             block->outlier_idx[k_idx] = 0;
             block->outlier_vals[k_idx] = 0;
         }
+        block->padding = 0;
     }
 }
 

@@ -339,12 +339,13 @@ typedef struct {
     } GGML_COMMON_AGGR_U;
     uint8_t scales[K_SCALE_SIZE];  // 12 bytes: scales and mins
     uint8_t qs[QK_K/2];            // 128 bytes: 4-bit quants
-    // === OUTLIER EXTENSION (97 bytes) ===
-    uint8_t outlier_count;                         // 1 byte: actual number of outliers used (8-32)
+    // === OUTLIER EXTENSION (98 bytes) ===
     uint8_t outlier_idx[Q4_HIFI_MAX_OUTLIERS];     // 32 bytes: outlier positions (0-255)
     ggml_half outlier_vals[Q4_HIFI_MAX_OUTLIERS];  // 64 bytes: FP16 outlier values
+    uint8_t outlier_count;                         // 1 byte: actual number of outliers used (8-32)
+    uint8_t padding;                               // 1 byte: alignment padding
 } block_q4_hifi;
-static_assert(sizeof(block_q4_hifi) == sizeof(block_q4_K) + 1 + Q4_HIFI_MAX_OUTLIERS + Q4_HIFI_MAX_OUTLIERS*sizeof(ggml_half), "wrong q4_hifi block size/padding");
+static_assert(sizeof(block_q4_hifi) == sizeof(block_q4_K) + Q4_HIFI_MAX_OUTLIERS + Q4_HIFI_MAX_OUTLIERS*sizeof(ggml_half) + 2, "wrong q4_hifi block size/padding");
 
 // 5-bit quantization
 // 8 blocks of 32 elements each

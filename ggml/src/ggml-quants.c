@@ -5797,10 +5797,10 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
                 // Validate Q4_K-compatible dm field + residual_scale float
                 const block_q4_hifi_residual * q = (const block_q4_hifi_residual *) data;
                 for (size_t i = 0; i < nb; ++i) {
-                    if (!validate_fp16(q[i].dm.GGML_COMMON_AGGR_S.d, i)) {
+                    if (!validate_fp16(q[i].d, i)) {
                         return false;
                     }
-                    if (!validate_fp16(q[i].dm.GGML_COMMON_AGGR_S.dmin, i)) {
+                    if (!validate_fp16(q[i].dmin, i)) {
                         return false;
                     }
                     if (!validate_float(q[i].residual_scale, i)) {

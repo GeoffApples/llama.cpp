@@ -710,8 +710,13 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_M ) new_type = GGML_TYPE_Q4_K;
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_HIFI) new_type = GGML_TYPE_Q4_K;
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
-                    // Strategic Q4_HIFI: FP16 outliers for all attn_output (always critical)
-                    new_type = GGML_TYPE_Q4_HIFI;
+                    // Strategic Q4_HIFI: FP16 outliers ONLY for early layers (0-10)
+                    int layer_idx = q4_hifi_get_layer_from_name(name);
+                    if (layer_idx >= 0 && layer_idx <= 10) {
+                        new_type = GGML_TYPE_Q4_HIFI;  // FP16 outliers for early layers
+                    } else {
+                        new_type = GGML_TYPE_Q4_K;  // Q4_K for late layers (speed)
+                    }
                 }
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI_RESIDUAL) {
                     // attn_output is critical → use Q4_HIFI_RESIDUAL for quality

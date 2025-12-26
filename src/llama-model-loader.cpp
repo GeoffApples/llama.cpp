@@ -62,6 +62,7 @@ static std::string llama_model_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_IQ3_M:    return "IQ3_S mix - 3.66 bpw";
         case LLAMA_FTYPE_MOSTLY_Q3_HIFI:  return "Q3_HIFI - ~4.2 bpw adaptive (Q3_HIFI on sensitive layers)";
         case LLAMA_FTYPE_MOSTLY_Q4_HIFI:  return "Q4_HIFI - ~4.5 bpw adaptive (parameter-driven 8-32 outliers)";
+        case LLAMA_FTYPE_MOSTLY_Q4_HIFI_RESIDUAL: return "Q4_HIFI_R - ~4.4 bpw (Q4_K + INT8 residuals on early layers)";
 
         default: return "unknown, may not work";
     }

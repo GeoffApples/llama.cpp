@@ -553,8 +553,14 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             new_type = GGML_TYPE_Q3_HIFI;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
-            // Adaptive Q4_HIFI: use Q4_HIFI for ALL attn_v layers (high impact on quality)
-            new_type = GGML_TYPE_Q4_HIFI;
+            // Strategic Q4_HIFI: FP16 outliers ONLY for early layers (0-10)
+            // Early layers dominate attention quality; late layers use Q4_K for speed
+            int layer_idx = q4_hifi_get_layer_from_name(name);
+            if (layer_idx >= 0 && layer_idx <= 10) {
+                new_type = GGML_TYPE_Q4_HIFI;  // FP16 outliers for early layers
+            } else {
+                new_type = GGML_TYPE_Q4_K;  // Q4_K for late layers (speed)
+            }
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI_RESIDUAL) {
             // Revolutionary Q4_HIFI_RESIDUAL: Apply only to early layers (0-10)
@@ -598,8 +604,8 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             new_type = GGML_TYPE_IQ2_S;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
-            // Strategy 1: attn_k is non-critical → use Q4_K for speed
-            new_type = qs.get_q4_hifi_tensor_base_type(name);
+            // attn_k is non-critical → use Q4_K for speed
+            new_type = GGML_TYPE_Q4_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI_RESIDUAL) {
             // attn_k is non-critical → use Q4_K for speed
@@ -613,8 +619,8 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             new_type = GGML_TYPE_IQ2_S;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
-            // Strategy 1: attn_q is non-critical → use Q4_K for speed
-            new_type = qs.get_q4_hifi_tensor_base_type(name);
+            // attn_q is non-critical → use Q4_K for speed
+            new_type = GGML_TYPE_Q4_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI_RESIDUAL) {
             // attn_q is non-critical → use Q4_K for speed
@@ -642,14 +648,12 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
                      : GGML_TYPE_Q3_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
-            // Strategy 1+2 combined: Architecture-aware FFN coverage with hybrid base precision
-            // FFN coverage determined by layer depth (Strategy 2), fallback uses adaptive base (Strategy 1)
-            int coverage_layers = (int)(n_layer * qs.q4_hifi_ffn_coverage);
-            if (i_layer < coverage_layers) {
-                new_type = GGML_TYPE_Q4_HIFI;
+            // Strategic Q4_HIFI: FP16 outliers ONLY for early layers (0-10)
+            // Early ffn_down layers have highest impact on MLP quality
+            if (i_layer <= 10) {
+                new_type = GGML_TYPE_Q4_HIFI;  // FP16 outliers for early layers
             } else {
-                // Non-HIFI ffn_down layers: use Q4_K for speed (not critical)
-                new_type = qs.get_q4_hifi_tensor_base_type(name);
+                new_type = GGML_TYPE_Q4_K;  // Q4_K for late layers (speed)
             }
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI_RESIDUAL) {
@@ -706,8 +710,8 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_M ) new_type = GGML_TYPE_Q4_K;
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_HIFI) new_type = GGML_TYPE_Q4_K;
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
-                    // Strategy 1: attn_output is critical → use Q5_K/Q6_K for quality
-                    new_type = qs.get_q4_hifi_tensor_base_type(name);
+                    // Strategic Q4_HIFI: FP16 outliers for all attn_output (always critical)
+                    new_type = GGML_TYPE_Q4_HIFI;
                 }
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI_RESIDUAL) {
                     // attn_output is critical → use Q4_HIFI_RESIDUAL for quality
@@ -726,8 +730,9 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             new_type = GGML_TYPE_Q4_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
-            // Strategy 1: attn_qkv is mixed (contains v) → use selective base
-            new_type = qs.get_q4_hifi_tensor_base_type(name);
+            // attn_qkv is mixed (contains v) → use Q4_K for speed
+            // Note: Individual attn_v layers handled above
+            new_type = GGML_TYPE_Q4_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI_RESIDUAL) {
             // attn_qkv contains V which is sensitive → use Q4_K (speed)
@@ -744,8 +749,8 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             new_type = GGML_TYPE_IQ3_XXS;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
-            // Strategy 1: ffn_gate is non-critical → use Q4_K for speed
-            new_type = qs.get_q4_hifi_tensor_base_type(name);
+            // ffn_gate is non-critical → use Q4_K for speed
+            new_type = GGML_TYPE_Q4_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI_RESIDUAL) {
             // ffn_gate is non-critical → use Q4_K for speed
@@ -760,8 +765,8 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             new_type = GGML_TYPE_IQ3_XXS;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
-            // Strategy 1: ffn_up is non-critical → use Q4_K for speed
-            new_type = qs.get_q4_hifi_tensor_base_type(name);
+            // ffn_up is non-critical → use Q4_K for speed
+            new_type = GGML_TYPE_Q4_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI_RESIDUAL) {
             // ffn_up is non-critical → use Q4_K for speed

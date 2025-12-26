@@ -89,17 +89,68 @@ static std::string remap_imatrix (const std::string & orig_name, const std::map<
 //
 // Solution: Match Q4_K_M's mixed-precision approach while preserving outlier benefits
 
-// ====================== STRATEGY 1: Hybrid Base Precision ======================
-// For models >3B, use higher base precision (Q5_K/Q6_K) for non-HIFI tensors
-// This matches Q4_K_M's key advantage while keeping outlier benefits on critical tensors
+// ====================== STRATEGY 1: Selective Hybrid Base Precision ======================
+// For models >3B, use higher base precision (Q5_K/Q6_K) ONLY for critical tensors
+// Non-critical tensors use Q4_K to maintain speed while preserving quality where it matters
+//
+// Critical tensors (get Q5_K/Q6_K base):
+//   - attn_v, ffn_down: Already have Q4_HIFI outliers, base doesn't affect these
+//   - lm_head/output: Critical for vocabulary prediction
+//   - token_embd: First layer, impacts all downstream activations
+//   - attn_output: Projection layer, high sensitivity
+//
+// Non-critical tensors (use Q4_K base for speed):
+//   - ffn_gate, ffn_up: Less sensitive, Q4_K is sufficient
+//   - attn_q, attn_k: Query/key projections, less impact than value
 
+// Check if a tensor is critical and needs higher base precision
+static bool q4_hifi_is_critical_tensor(const std::string & name) {
+    // Output/vocabulary tensors - critical for prediction quality
+    if (name.find("output.weight") != std::string::npos) return true;
+    if (name.find("lm_head") != std::string::npos) return true;
+    
+    // Token embeddings - first layer, high impact
+    if (name.find("token_embd") != std::string::npos) return true;
+    if (name.find("tok_embeddings") != std::string::npos) return true;
+    if (name.find("embed_tokens") != std::string::npos) return true;
+    
+    // Attention output projection - sensitive layer
+    if (name.find("attn_output") != std::string::npos) return true;
+    
+    // Note: attn_v and ffn_down already get Q4_HIFI treatment (outliers)
+    // so their base precision is handled by the Q4_HIFI quantization itself
+    
+    return false;
+}
+
+// Get base quantization type for a specific tensor (selective approach)
+static ggml_type q4_hifi_get_tensor_base_quant(const std::string & name, int64_t param_count) {
+    // For small models (≤3B), use Q4_K everywhere - works great
+    if (param_count <= 3000000000LL) {
+        return GGML_TYPE_Q4_K;
+    }
+    
+    // For larger models, only critical tensors get higher precision
+    if (q4_hifi_is_critical_tensor(name)) {
+        if (param_count <= 10000000000LL) {
+            return GGML_TYPE_Q5_K;   // 3B-10B: Q5_K for critical tensors
+        } else {
+            return GGML_TYPE_Q6_K;   // >10B: Q6_K for critical tensors
+        }
+    }
+    
+    // Non-critical tensors: use Q4_K for speed (same as Q4_K_M behavior)
+    return GGML_TYPE_Q4_K;
+}
+
+// Legacy function for global base type (used by quantize_state_impl)
 static ggml_type q4_hifi_get_base_quant_type(int64_t param_count) {
     if (param_count <= 3000000000LL) {
-        return GGML_TYPE_Q4_K;   // ≤3B: Pure 4-bit (current approach works well)
+        return GGML_TYPE_Q4_K;   // ≤3B: Pure 4-bit
     } else if (param_count <= 10000000000LL) {
-        return GGML_TYPE_Q5_K;   // 3B-10B: 5-bit base + outliers (the sweet spot for 4B)
+        return GGML_TYPE_Q5_K;   // 3B-10B: Q5_K (for critical tensors)
     } else {
-        return GGML_TYPE_Q6_K;   // >10B: 6-bit base + outliers (matches Q4_K_M precision)
+        return GGML_TYPE_Q6_K;   // >10B: Q6_K (for critical tensors)
     }
 }
 
@@ -110,6 +161,11 @@ static ggml_type q4_hifi_get_base_quant_type(int64_t param_count) {
 static float q4_hifi_get_ffn_coverage_by_architecture(int64_t param_count, int n_layers) {
     // Architecture-aware: layer depth matters more than raw param count
     // Qwen-4B has 36 layers vs Qwen-1.7B's 28 → 29% deeper = more error accumulation
+    
+    // For very large models (>70B), skip FFN regardless of layer count
+    if (param_count > 70000000000LL) {
+        return 0.0f;
+    }
     
     if (n_layers <= 30) {
         // Shallow models (≤30 layers): Full 50% FFN coverage - outliers very effective
@@ -237,7 +293,8 @@ struct quantize_state_impl {
         total_params = param_count;
         q4_hifi_n_layers = n_layers;
         
-        // Strategy 1: Determine base quantization type based on model size
+        // Strategy 1: Determine base quantization type for critical tensors
+        // (non-critical tensors will use Q4_K regardless)
         q4_hifi_base_type = q4_hifi_get_base_quant_type(param_count);
         
         // Strategy 2: Use architecture-aware FFN coverage (considers layer depth)
@@ -251,13 +308,15 @@ struct quantize_state_impl {
         const char * base_type_name = ggml_type_name(q4_hifi_base_type);
         LLAMA_LOG_INFO("\n%s: Q4_HIFI Adaptive System Initialized\n", __func__);
         LLAMA_LOG_INFO("%s:   Model: %.2fB params, %d layers\n", __func__, param_count / 1e9, n_layers);
-        LLAMA_LOG_INFO("%s:   Strategy 1 - Base Precision: %s (hybrid approach for 4B+ models)\n", __func__, base_type_name);
+        LLAMA_LOG_INFO("%s:   Strategy 1 - Selective Base Precision:\n", __func__);
+        LLAMA_LOG_INFO("%s:       Critical tensors (output, embed, attn_output): %s\n", __func__, base_type_name);
+        LLAMA_LOG_INFO("%s:       Non-critical tensors (ffn_gate/up, attn_q/k): Q4_K (for speed)\n", __func__);
         LLAMA_LOG_INFO("%s:   Strategy 2 - FFN Coverage: %.0f%% (architecture-aware)\n", __func__, q4_hifi_ffn_coverage * 100);
         LLAMA_LOG_INFO("%s:   Strategy 3 - Outlier Budget: %d base, %d massive (layer-adaptive)\n", __func__, q4_hifi_base_outliers, q4_hifi_massive_outliers);
         
         // Log expected improvements for 4B+ models
         if (param_count > 3000000000LL) {
-            LLAMA_LOG_INFO("%s:   Note: Using hybrid precision to compete with Q4_K_M at scale\n", __func__);
+            LLAMA_LOG_INFO("%s:   Note: Selective Q5_K reduces size/improves speed vs uniform Q5_K\n", __func__);
         }
     }
     
@@ -280,6 +339,11 @@ struct quantize_state_impl {
         }
         
         return q4_hifi_base_outliers;
+    }
+    
+    // Get base quantization type for a specific tensor (Strategy 1: selective)
+    ggml_type get_q4_hifi_tensor_base_type(const std::string & tensor_name) const {
+        return q4_hifi_get_tensor_base_quant(tensor_name, total_params);
     }
     
     // Get the base quantization type for non-HIFI tensors (Strategy 1)
@@ -524,8 +588,8 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             new_type = GGML_TYPE_IQ2_S;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
-            // Strategy 1: Use hybrid base precision for attn_k
-            new_type = qs.get_q4_hifi_base_type();
+            // Strategy 1: attn_k is non-critical → use Q4_K for speed
+            new_type = qs.get_q4_hifi_tensor_base_type(name);
         }
     } else if (name.find("attn_q.weight") != std::string::npos) {
         if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_XS) {
@@ -535,8 +599,8 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             new_type = GGML_TYPE_IQ2_S;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
-            // Strategy 1: Use hybrid base precision for attn_q
-            new_type = qs.get_q4_hifi_base_type();
+            // Strategy 1: attn_q is non-critical → use Q4_K for speed
+            new_type = qs.get_q4_hifi_tensor_base_type(name);
         }
     } else if (name.find("ffn_down") != std::string::npos) {
         auto info = layer_info(qs.i_ffn_down, qs.n_ffn_down, name.c_str());
@@ -566,8 +630,8 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             if (i_layer < coverage_layers) {
                 new_type = GGML_TYPE_Q4_HIFI;
             } else {
-                // Use hybrid base precision for non-HIFI layers (Q5_K for 4B+, Q6_K for 10B+)
-                new_type = qs.get_q4_hifi_base_type();
+                // Non-HIFI ffn_down layers: use Q4_K for speed (not critical)
+                new_type = qs.get_q4_hifi_tensor_base_type(name);
             }
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_M && (i_layer < n_layer/8 ||
@@ -615,8 +679,8 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_M ) new_type = GGML_TYPE_Q4_K;
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_HIFI) new_type = GGML_TYPE_Q4_K;
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
-                    // Strategy 1: Use hybrid base precision for attn_output (sensitive layer)
-                    new_type = qs.get_q4_hifi_base_type();
+                    // Strategy 1: attn_output is critical → use Q5_K/Q6_K for quality
+                    new_type = qs.get_q4_hifi_tensor_base_type(name);
                 }
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_L ) new_type = GGML_TYPE_Q5_K;
                 else if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_M  ) new_type = GGML_TYPE_Q4_K;
@@ -631,8 +695,8 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             new_type = GGML_TYPE_Q4_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
-            // Strategy 1: Use hybrid base precision for attn_qkv (fused attention weights)
-            new_type = qs.get_q4_hifi_base_type();
+            // Strategy 1: attn_qkv is mixed (contains v) → use selective base
+            new_type = qs.get_q4_hifi_tensor_base_type(name);
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_K_M) new_type = GGML_TYPE_Q5_K;
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q5_K_M) new_type = GGML_TYPE_Q6_K;
@@ -644,8 +708,8 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             new_type = GGML_TYPE_IQ3_XXS;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
-            // Strategy 1: Use hybrid base precision for ffn_gate (matches Q4_K_M approach)
-            new_type = qs.get_q4_hifi_base_type();
+            // Strategy 1: ffn_gate is non-critical → use Q4_K for speed
+            new_type = qs.get_q4_hifi_tensor_base_type(name);
         }
         ++qs.i_ffn_gate;
     }
@@ -656,8 +720,8 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             new_type = GGML_TYPE_IQ3_XXS;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
-            // Strategy 1: Use hybrid base precision for ffn_up (matches Q4_K_M approach)
-            new_type = qs.get_q4_hifi_base_type();
+            // Strategy 1: ffn_up is non-critical → use Q4_K for speed
+            new_type = qs.get_q4_hifi_tensor_base_type(name);
         }
         ++qs.i_ffn_up;
     }

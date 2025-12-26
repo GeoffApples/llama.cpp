@@ -91,6 +91,14 @@ static int q4_hifi_get_massive_outliers(int64_t param_count) {
     return q4_hifi_get_base_outliers(param_count) * 2;
 }
 
+// Scale-aware tensor coverage: reduce ffn_down coverage on large models
+// Large models benefit less from outlier preservation (diminishing returns)
+static float q4_hifi_get_ffn_coverage(int64_t param_count) {
+    if (param_count <= 10000000000LL)   return 0.50f;  // ≤10B:  50% of ffn_down layers
+    if (param_count <= 70000000000LL)   return 0.25f;  // 10B-70B: 25% of ffn_down layers
+    return 0.0f;                                        // >70B: 0% (attn_v only)
+}
+
 // Check if a tensor is a "massive" layer that benefits from extra outliers
 static bool q4_hifi_is_massive_tensor(const std::string & name) {
     // Output/lm_head tensors - critical for vocabulary prediction
@@ -129,20 +137,23 @@ struct quantize_state_impl {
     int64_t total_params = 0;
     int q4_hifi_base_outliers = 16;
     int q4_hifi_massive_outliers = 32;
+    float q4_hifi_ffn_coverage = 0.5f;  // fraction of ffn_down layers to use Q4_HIFI
 
     quantize_state_impl(const llama_model & model, const llama_model_quantize_params * params)
         : model(model)
         , params(params)
         {}
     
-    // Initialize Q4_HIFI outlier counts based on total parameter count
+    // Initialize Q4_HIFI outlier counts and coverage based on total parameter count
     void init_q4_hifi_outliers(int64_t param_count) {
         total_params = param_count;
         q4_hifi_base_outliers = q4_hifi_get_base_outliers(param_count);
         q4_hifi_massive_outliers = q4_hifi_get_massive_outliers(param_count);
+        q4_hifi_ffn_coverage = q4_hifi_get_ffn_coverage(param_count);
         
-        LLAMA_LOG_INFO("%s: Q4_HIFI detected %.2fB parameters -> base=%d, massive=%d outliers\n",
-                       __func__, param_count / 1e9, q4_hifi_base_outliers, q4_hifi_massive_outliers);
+        LLAMA_LOG_INFO("%s: Q4_HIFI detected %.2fB params -> outliers=%d/%d, ffn_coverage=%.0f%%\n",
+                       __func__, param_count / 1e9, q4_hifi_base_outliers, q4_hifi_massive_outliers,
+                       q4_hifi_ffn_coverage * 100);
     }
     
     // Get outlier count for a specific tensor
@@ -418,8 +429,10 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
                      : GGML_TYPE_Q3_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
-            // Adaptive Q4_HIFI: use Q4_HIFI for first half of ffn_down layers (most sensitive to quantization)
-            new_type = i_layer < n_layer/2 ? GGML_TYPE_Q4_HIFI : GGML_TYPE_Q4_K;
+            // Scale-aware Q4_HIFI: coverage reduces with model size (50% → 25% → 0%)
+            // Large models (>70B) skip ffn_down entirely (attn_v only provides better value)
+            int coverage_layers = (int)(n_layer * qs.q4_hifi_ffn_coverage);
+            new_type = i_layer < coverage_layers ? GGML_TYPE_Q4_HIFI : GGML_TYPE_Q4_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_M && (i_layer < n_layer/8 ||
                     (qs.model.hparams.n_expert == 8 && use_more_bits(i_layer, n_layer)))) {

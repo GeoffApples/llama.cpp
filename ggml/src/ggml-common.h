@@ -408,6 +408,24 @@ typedef struct {
 } block_q6_K;
 static_assert(sizeof(block_q6_K) == sizeof(ggml_half) + QK_K / 16 + 3*QK_K/4, "wrong q6_K block size/padding");
 
+// Q6_HIFI: Q6_K base + FP16 outliers
+// Enhances Q6_K with targeted outlier preservation for maximum precision
+// Use case: Replace Q6_K in Q4_K_M for critical tensors
+#define Q6_HIFI_MAX_OUTLIERS 8
+typedef struct {
+    // === Q6_K BASE (210 bytes) ===
+    uint8_t ql[QK_K/2];      // 128 bytes: quants, lower 4 bits
+    uint8_t qh[QK_K/4];      // 64 bytes: quants, upper 2 bits
+    int8_t  scales[QK_K/16]; // 16 bytes: scales, quantized with 8 bits
+    ggml_half d;             // 2 bytes: super-block scale
+    // === OUTLIER EXTENSION (25 bytes) ===
+    uint8_t outlier_count;                        // 1 byte: actual outlier count (0-8)
+    uint8_t outlier_idx[Q6_HIFI_MAX_OUTLIERS];    // 8 bytes: outlier positions (0-255)
+    ggml_half outlier_vals[Q6_HIFI_MAX_OUTLIERS]; // 16 bytes: FP16 outlier values
+} block_q6_hifi;
+// Total: 210 + 1 + 8 + 16 = 235 bytes (~7.34 BPW vs Q6_K's 6.56 BPW)
+static_assert(sizeof(block_q6_hifi) == sizeof(block_q6_K) + 1 + Q6_HIFI_MAX_OUTLIERS + Q6_HIFI_MAX_OUTLIERS * sizeof(ggml_half), "wrong q6_hifi block size");
+
 // This is only used for intermediate quantization and dot products
 typedef struct {
     float   d;              // delta

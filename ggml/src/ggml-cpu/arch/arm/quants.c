@@ -2198,6 +2198,11 @@ void ggml_vec_dot_q4_hifi_residual_q8_K(int n, float * GGML_RESTRICT s, size_t b
     ggml_vec_dot_q4_hifi_residual_q8_K_generic(n, s, bs, vx, bx, vy, by, nrc);
 }
 
+// Q6_HIFI: ARM fallback to generic implementation
+void ggml_vec_dot_q6_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    ggml_vec_dot_q6_hifi_q8_K_generic(n, s, bs, vx, bx, vy, by, nrc);
+}
+
 #ifdef __ARM_FEATURE_SVE
 static inline svuint32_t ggml_decode_q4scales_and_mins_for_mmla(const uint32_t * vx_scales) {
     const svbool_t pg_all   = svptrue_pat_b32(SV_VL4);

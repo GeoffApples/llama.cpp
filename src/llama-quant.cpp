@@ -578,6 +578,8 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
         }
         else if ((ftype == LLAMA_FTYPE_MOSTLY_Q4_K_M || ftype == LLAMA_FTYPE_MOSTLY_Q5_K_M) &&
                 use_more_bits(qs.i_attention_wv, qs.n_attention_wv)) new_type = GGML_TYPE_Q6_K;
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_K_M_HIFI &&
+                use_more_bits(qs.i_attention_wv, qs.n_attention_wv)) new_type = GGML_TYPE_Q6_HIFI; // Q6_K + outliers
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_K_S && qs.i_attention_wv < 4) new_type = GGML_TYPE_Q5_K;
         if (qs.model.type == LLM_TYPE_70B) {
             // In the 70B model we have 8 heads sharing the same attn_v weights. As a result, the attn_v.weight tensor is
@@ -680,6 +682,15 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
                 if (use_more_bits(i_layer, n_layer)) new_type = GGML_TYPE_Q6_K;
             }
         }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_K_M_HIFI) {
+            // Same logic as Q4_K_M but use Q6_HIFI instead of Q6_K
+            if (arch == LLM_ARCH_FALCON) {
+                new_type = i_layer < n_layer/16 ? GGML_TYPE_Q6_HIFI :
+                           use_more_bits(i_layer, n_layer) ? GGML_TYPE_Q5_K : GGML_TYPE_Q4_K;
+            } else {
+                if (use_more_bits(i_layer, n_layer)) new_type = GGML_TYPE_Q6_HIFI;
+            }
+        }
         else if (i_layer < n_layer/8 && (ftype == LLAMA_FTYPE_MOSTLY_IQ4_NL || ftype == LLAMA_FTYPE_MOSTLY_IQ4_XS) && !qs.has_imatrix) {
             new_type = GGML_TYPE_Q5_K;
         }
@@ -722,6 +733,10 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
                     // attn_output is critical → use Q4_HIFI_RESIDUAL for quality
                     new_type = GGML_TYPE_Q4_HIFI_RESIDUAL;
                 }
+                else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_K_M_HIFI) {
+                    // Q4_K_M_HIFI: Use Q6_HIFI for critical attn_output tensors
+                    new_type = GGML_TYPE_Q6_HIFI;
+                }
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_L ) new_type = GGML_TYPE_Q5_K;
                 else if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_M  ) new_type = GGML_TYPE_Q4_K;
             }
@@ -745,6 +760,7 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             new_type = GGML_TYPE_Q4_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_K_M) new_type = GGML_TYPE_Q5_K;
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_K_M_HIFI) new_type = GGML_TYPE_Q6_HIFI; // Q5_K → Q6_HIFI for extra precision
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q5_K_M) new_type = GGML_TYPE_Q6_K;
     }
     else if (name.find("ffn_gate") != std::string::npos) {
@@ -932,6 +948,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         case LLAMA_FTYPE_MOSTLY_Q3_HIFI: default_type = GGML_TYPE_Q3_K;    break; // Adaptive: Q3_K base, Q3_HIFI on sensitive layers
         case LLAMA_FTYPE_MOSTLY_Q4_HIFI: default_type = GGML_TYPE_Q4_K;    break; // Adaptive: Q4_K base, Q4_HIFI on sensitive layers
         case LLAMA_FTYPE_MOSTLY_Q4_HIFI_RESIDUAL: default_type = GGML_TYPE_Q4_K; break; // Revolutionary: Q4_K base + INT8 residuals on early layers
+        case LLAMA_FTYPE_MOSTLY_Q4_K_M_HIFI: default_type = GGML_TYPE_Q4_K; break; // Q4_K_M enhanced with Q6_HIFI on critical tensors
 
         default: throw std::runtime_error(format("invalid output file type %d\n", ftype));
     }

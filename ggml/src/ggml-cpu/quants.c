@@ -793,6 +793,49 @@ void ggml_vec_dot_q4_hifi_residual_q8_K_generic(int n, float * GGML_RESTRICT s, 
 
 // Note: ggml_vec_dot_q4_hifi_residual_q8_K is defined in arch-specific files (x86/quants.c etc.)
 
+void ggml_vec_dot_q6_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(n % QK_K == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_q6_hifi * GGML_RESTRICT x = (const block_q6_hifi *)vx;
+    const block_q8_K * GGML_RESTRICT y = (const block_q8_K *)vy;
+    const int nb = n / QK_K;
+
+    float sumf = 0;
+    
+    for (int i = 0; i < nb; ++i) {
+        const block_q6_hifi * xb = &x[i];
+        const block_q8_K * yb = &y[i];
+        
+        // Dequantize Q6_K base weights
+        float weights[QK_K];
+        dequantize_row_q6_K((const block_q6_K *)xb, weights, QK_K);
+        
+        // Restore FP16 outlier values
+        const int outlier_count = xb->outlier_count;
+        for (int k = 0; k < outlier_count && k < Q6_HIFI_MAX_OUTLIERS; ++k) {
+            const int idx = xb->outlier_idx[k];
+            weights[idx] = GGML_FP16_TO_FP32(xb->outlier_vals[k]);
+        }
+        
+        // Compute dot product
+        const float yd = GGML_FP16_TO_FP32(yb->d);
+        float block_sum = 0;
+        for (int j = 0; j < QK_K; ++j) {
+            block_sum += weights[j] * yb->qs[j];
+        }
+        sumf += block_sum * yd;
+    }
+    
+    *s = sumf;
+}
+
+// Note: ggml_vec_dot_q6_hifi_q8_K is defined in arch-specific files (x86/quants.c etc.)
+
 void ggml_vec_dot_q4_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % QK_K == 0);
     assert(nrc == 1);

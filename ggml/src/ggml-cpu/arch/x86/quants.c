@@ -2147,6 +2147,12 @@ void ggml_vec_dot_q4_hifi_residual_q8_K(int n, float * GGML_RESTRICT s, size_t b
     ggml_vec_dot_q4_hifi_residual_q8_K_generic(n, s, bs, vx, bx, vy, by, nrc);
 }
 
+// Q6_HIFI vec_dot: Q6_K base + FP16 outlier restoration
+// Falls back to generic for now
+void ggml_vec_dot_q6_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    ggml_vec_dot_q6_hifi_q8_K_generic(n, s, bs, vx, bx, vy, by, nrc);
+}
+
 void ggml_vec_dot_q5_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy,  size_t by, int nrc) {
     assert(n % QK_K == 0);
     assert(nrc == 1);

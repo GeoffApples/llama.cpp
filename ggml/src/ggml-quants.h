@@ -122,6 +122,13 @@ GGML_API void quantize_row_q4_hifi_residual_ref(const float * GGML_RESTRICT x, b
 GGML_API void dequantize_row_q4_hifi_residual(const block_q4_hifi_residual * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API size_t quantize_q4_hifi_residual(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 
+// Q6_HIFI: Q6_K base + 8 FP16 outliers per block
+// Use case: Enhance Q4_K_M by replacing Q6_K tensors with Q6_HIFI
+// Benefits: Q6_K precision + targeted outlier preservation = maximum quality
+GGML_API void quantize_row_q6_hifi_ref(const float * GGML_RESTRICT x, block_q6_hifi * GGML_RESTRICT y, int64_t k, const float * GGML_RESTRICT imatrix);
+GGML_API void dequantize_row_q6_hifi(const block_q6_hifi * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+GGML_API size_t quantize_q6_hifi(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
+
 #ifdef __cplusplus
 }
 #endif

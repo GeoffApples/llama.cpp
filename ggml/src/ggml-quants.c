@@ -1745,6 +1745,92 @@ size_t quantize_q4_hifi_residual(const float * GGML_RESTRICT src, void * GGML_RE
     return nrow * row_size;
 }
 
+// ====================== Q6_HIFI (Q6_K + FP16 outliers) =====================
+
+void quantize_row_q6_hifi_ref(const float * GGML_RESTRICT x, block_q6_hifi * GGML_RESTRICT y, int64_t k, const float * GGML_RESTRICT imatrix) {
+    assert(k % QK_K == 0);
+    const int64_t nb = k / QK_K;
+    const int max_outliers = Q6_HIFI_MAX_OUTLIERS;
+
+    for (int64_t i = 0; i < nb; i++) {
+        const float * xb = x + i * QK_K;
+        block_q6_hifi * yb = y + i;
+        const float * im = imatrix ? (imatrix + i * QK_K) : NULL;
+
+        // Step 1: Find top-K outliers by importance-weighted magnitude
+        float importance[QK_K];
+        for (int j = 0; j < QK_K; ++j) {
+            float weight = im ? im[j] : 1.0f;
+            importance[j] = fabsf(xb[j]) * weight;
+        }
+
+        int outlier_idx[Q6_HIFI_MAX_OUTLIERS];
+        for (int k_idx = 0; k_idx < max_outliers; ++k_idx) {
+            int argmax = 0;
+            float max_val = importance[0];
+            for (int j = 1; j < QK_K; ++j) {
+                if (importance[j] > max_val) {
+                    max_val = importance[j];
+                    argmax = j;
+                }
+            }
+            outlier_idx[k_idx] = argmax;
+            importance[argmax] = -1.0f;  // Mark as used
+        }
+
+        // Step 2: Zero outliers and quantize as Q6_K
+        float tmp[QK_K];
+        memcpy(tmp, xb, QK_K * sizeof(float));
+        for (int k_idx = 0; k_idx < max_outliers; ++k_idx) {
+            tmp[outlier_idx[k_idx]] = 0.0f;
+        }
+        quantize_row_q6_K_ref(tmp, (block_q6_K *)yb, QK_K);
+
+        // Step 3: Store outlier metadata
+        yb->outlier_count = max_outliers;
+        for (int k_idx = 0; k_idx < max_outliers; ++k_idx) {
+            yb->outlier_idx[k_idx] = (uint8_t)outlier_idx[k_idx];
+            yb->outlier_vals[k_idx] = GGML_FP32_TO_FP16(xb[outlier_idx[k_idx]]);
+        }
+    }
+}
+
+void dequantize_row_q6_hifi(const block_q6_hifi * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_K == 0);
+    const int64_t nb = k / QK_K;
+
+    for (int64_t i = 0; i < nb; ++i) {
+        const block_q6_hifi * xb = &x[i];
+        float * yb = y + i * QK_K;
+
+        // Step 1: Dequantize Q6_K base
+        dequantize_row_q6_K((const block_q6_K *)xb, yb, QK_K);
+
+        // Step 2: Restore FP16 outlier values
+        const int outlier_count = xb->outlier_count;
+        for (int k_idx = 0; k_idx < outlier_count && k_idx < Q6_HIFI_MAX_OUTLIERS; ++k_idx) {
+            const int idx = xb->outlier_idx[k_idx];
+            if (idx < QK_K) {
+                yb[idx] = GGML_FP16_TO_FP32(xb->outlier_vals[k_idx]);
+            }
+        }
+    }
+}
+
+size_t quantize_q6_hifi(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * imatrix) {
+    const size_t row_size = ggml_row_size(GGML_TYPE_Q6_HIFI, n_per_row);
+    
+    char * qrow = (char *)dst;
+    for (int64_t row = 0; row < nrow; ++row) {
+        const float * im = imatrix ? (imatrix + row * n_per_row) : NULL;
+        quantize_row_q6_hifi_ref(src, (block_q6_hifi*)qrow, n_per_row, im);
+        src += n_per_row;
+        qrow += row_size;
+    }
+    
+    return nrow * row_size;
+}
+
 // ====================== 4-bit (de)-quantization
 
 void quantize_row_q4_K_ref(const float * GGML_RESTRICT x, block_q4_K * GGML_RESTRICT y, int64_t k) {
@@ -5805,6 +5891,23 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
                     }
                     if (!validate_float(q[i].residual_scale, i)) {
                         return false;
+                    }
+                }
+            } break;
+
+        case GGML_TYPE_Q6_HIFI:
+            {
+                // Validate Q6_K d field + FP16 outlier values
+                const block_q6_hifi * q = (const block_q6_hifi *) data;
+                for (size_t i = 0; i < nb; ++i) {
+                    if (!validate_fp16(q[i].d, i)) {
+                        return false;
+                    }
+                    // Validate outlier values
+                    for (int k = 0; k < q[i].outlier_count && k < Q6_HIFI_MAX_OUTLIERS; ++k) {
+                        if (!validate_fp16(q[i].outlier_vals[k], i)) {
+                            return false;
+                        }
                     }
                 }
             } break;

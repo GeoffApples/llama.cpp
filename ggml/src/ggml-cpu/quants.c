@@ -744,7 +744,7 @@ void ggml_vec_dot_q4_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs
 // Note: ggml_vec_dot_q4_hifi_q8_K is defined in arch-specific files (x86/quants.c etc.)
 
 // Q4_HIFI_RESIDUAL vec_dot: Generic implementation
-// Uses Q4_K bulk computation + INT8 residual corrections
+// Uses dequantization approach for correctness
 // This is the revolutionary format: Q4_K base + INT8 residuals for outliers
 void ggml_vec_dot_q4_hifi_residual_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % QK_K == 0);
@@ -764,24 +764,28 @@ void ggml_vec_dot_q4_hifi_residual_q8_K_generic(int n, float * GGML_RESTRICT s, 
         const block_q4_hifi_residual * xb = &x[i];
         const block_q8_K * yb = &y[i];
         
-        // Step 1: Compute Q4_K bulk dot product
-        // First 144 bytes are Q4_K-compatible
-        float bulk_sum;
-        ggml_vec_dot_q4_K_q8_K_generic(QK_K, &bulk_sum, bs, xb, bx, yb, by, 1);
-        sumf += bulk_sum;
+        // Dequantize Q4_K base weights using existing function
+        // First 144 bytes of block_q4_hifi_residual match block_q4_K
+        float weights[QK_K];
+        dequantize_row_q4_K((const block_q4_K *)xb, weights, QK_K);
         
-        // Step 2: Add INT8 residual corrections
-        const float yd = GGML_FP16_TO_FP32(yb->d);
+        // Add INT8 residual corrections
         const float residual_scale = xb->residual_scale;
         const int outlier_count = xb->outlier_count;
         
         for (int k = 0; k < outlier_count && k < Q4_HIFI_RESIDUAL_MAX_OUTLIERS; ++k) {
             const int idx = xb->outlier_idx[k];
-            // Reconstruct residual: (INT8_val / 127) * scale
             const float residual = (xb->residual_vals[k] / 127.0f) * residual_scale;
-            // Add correction: residual * activation * y_scale
-            sumf += residual * yb->qs[idx] * yd;
+            weights[idx] += residual;
         }
+        
+        // Compute dot product
+        const float yd = GGML_FP16_TO_FP32(yb->d);
+        float block_sum = 0;
+        for (int j = 0; j < QK_K; ++j) {
+            block_sum += weights[j] * yb->qs[j];
+        }
+        sumf += block_sum * yd;
     }
     
     *s = sumf;

@@ -367,15 +367,16 @@ typedef struct {
     } GGML_COMMON_AGGR_U;
     uint8_t scales[K_SCALE_SIZE];  // 12 bytes: scales and mins
     uint8_t qs[QK_K/2];            // 128 bytes: 4-bit quants
-    // === RESIDUAL EXTENSION (21 bytes) ===
+    // === RESIDUAL EXTENSION (24 bytes with padding) ===
+    float residual_scale;                               // 4 bytes: shared scale for residuals (first for alignment)
     uint8_t outlier_count;                              // 1 byte: actual outlier count (0-8)
     uint8_t outlier_idx[Q4_HIFI_RESIDUAL_MAX_OUTLIERS]; // 8 bytes: outlier positions (0-255)
     int8_t residual_vals[Q4_HIFI_RESIDUAL_MAX_OUTLIERS]; // 8 bytes: INT8 residuals
-    float residual_scale;                               // 4 bytes: shared scale for residuals
+    uint8_t padding[3];                                 // 3 bytes: alignment padding
 } block_q4_hifi_residual;
-// Total: 144 + 1 + 8 + 8 + 4 = 165 bytes (vs 244 for FP16 outliers!)
-// Effective: ~4.47 BPW (better than Q4_K_M's 4.95 BPW!)
-static_assert(sizeof(block_q4_hifi_residual) == sizeof(block_q4_K) + 1 + Q4_HIFI_RESIDUAL_MAX_OUTLIERS + Q4_HIFI_RESIDUAL_MAX_OUTLIERS + 4, "wrong q4_hifi_residual block size");
+// Total: 144 + 4 + 1 + 8 + 8 + 3 = 168 bytes (vs 244 for FP16 outliers!)
+// Effective: ~4.55 BPW (still much better than Q4_K_M's 4.95 BPW!)
+static_assert(sizeof(block_q4_hifi_residual) == sizeof(block_q4_K) + 4 + 1 + Q4_HIFI_RESIDUAL_MAX_OUTLIERS + Q4_HIFI_RESIDUAL_MAX_OUTLIERS + 3, "wrong q4_hifi_residual block size");
 
 // 5-bit quantization
 // 8 blocks of 32 elements each

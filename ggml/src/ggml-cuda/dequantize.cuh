@@ -111,10 +111,10 @@ static __device__ __forceinline__ void dequantize_q3_hifi(const void * vx, const
     // Check if either index is an outlier and restore if so
     for (int k = 0; k < Q3_HIFI_OUTFIERS_PER_BLOCK; ++k) {
         if (x[ib].outlier_idx[k] == idx0) {
-            v.x = __half2float(x[ib].outlier_vals[k]);
+            v.x = __half2float(*reinterpret_cast<const __half*>(&x[ib].outlier_vals[k]));
         }
         if (x[ib].outlier_idx[k] == idx1) {
-            v.y = __half2float(x[ib].outlier_vals[k]);
+            v.y = __half2float(*reinterpret_cast<const __half*>(&x[ib].outlier_vals[k]));
         }
     }
 }

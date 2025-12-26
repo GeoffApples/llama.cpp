@@ -641,22 +641,25 @@ static __global__ void dequantize_block_q4_hifi_residual(const void * __restrict
 
     dst_t * y = yy + i*QK_K + 64*il + n*ir;
 
-    const float dall = __half2float(x[i].dm.x);
-    const float dmin = __half2float(x[i].dm.y);
+    const float dall = __low2half(x[i].dm);
+    const float dmin = __high2half(x[i].dm);
 
     const uint8_t * q = x[i].qs + 32*il + n*ir;
 
     uint8_t sc, m;
-    get_scale_min_k4(is + 0, x[i].scales, &sc, &m);
+    get_scale_min_k4(is + 0, x[i].scales, sc, m);
     const float d1 = dall * sc; const float m1 = dmin * m;
-    get_scale_min_k4(is + 1, x[i].scales, &sc, &m);
+    get_scale_min_k4(is + 1, x[i].scales, sc, m);
     const float d2 = dall * sc; const float m2 = dmin * m;
     for (int l = 0; l < n; ++l) {
-        y[l +  0] = d1 * (q[l] & 0xF) - m1;
-        y[l + 32] = d2 * (q[l] >>  4) - m2;
+        y[l + 0] = d1 * (q[l] & 0xF) - m1;
+        y[l +32] = d2 * (q[l] >>  4) - m2;
     }
 
-    // Add INT8 residual corrections (single thread handles all outliers)
+    // Synchronize before adding residual corrections
+    __syncthreads();
+
+    // Thread 0 handles residual corrections
     if (tid == 0) {
         dst_t * yb = yy + i*QK_K;
         const int outlier_count = x[i].outlier_count;

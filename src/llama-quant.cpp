@@ -76,10 +76,85 @@ static std::string remap_imatrix (const std::string & orig_name, const std::map<
     return orig_name;
 }
 
-// ====================== Q4_HIFI Parameter-Based Outlier Selection ======================
-// Outlier counts scale with model size - larger models need more outliers to preserve quality
-// Massive layers (lm_head, token_embd, output) get 2× the base outlier count
+// ====================== Q4_HIFI Adaptive Quantization System ======================
+// Three-strategy approach to make Q4_HIFI competitive across all model sizes:
+//   Strategy 1: Hybrid Base Precision - Use Q5_K/Q6_K base for 4B+ models
+//   Strategy 2: Architecture-Aware Selection - Adjust based on layer count, not just params
+//   Strategy 3: Dynamic Outlier Budget - Focus outliers on early/middle layers
+//
+// Analysis shows Q4_HIFI excels at ≤3B but underperforms at 4B+ because:
+//   - Q4_K_M uses Q6_K on sensitive layers → higher base precision where it matters
+//   - Deeper models (36+ layers) accumulate more quantization error
+//   - Outlier preservation alone isn't enough at scale
+//
+// Solution: Match Q4_K_M's mixed-precision approach while preserving outlier benefits
 
+// ====================== STRATEGY 1: Hybrid Base Precision ======================
+// For models >3B, use higher base precision (Q5_K/Q6_K) for non-HIFI tensors
+// This matches Q4_K_M's key advantage while keeping outlier benefits on critical tensors
+
+static ggml_type q4_hifi_get_base_quant_type(int64_t param_count) {
+    if (param_count <= 3000000000LL) {
+        return GGML_TYPE_Q4_K;   // ≤3B: Pure 4-bit (current approach works well)
+    } else if (param_count <= 10000000000LL) {
+        return GGML_TYPE_Q5_K;   // 3B-10B: 5-bit base + outliers (the sweet spot for 4B)
+    } else {
+        return GGML_TYPE_Q6_K;   // >10B: 6-bit base + outliers (matches Q4_K_M precision)
+    }
+}
+
+// ====================== STRATEGY 2: Architecture-Aware Outlier Selection ======================
+// Adjust FFN coverage based on layer count (depth), not just parameter count
+// Deep models (40+ layers) accumulate more quantization error → need different strategy
+
+static float q4_hifi_get_ffn_coverage_by_architecture(int64_t param_count, int n_layers) {
+    // Architecture-aware: layer depth matters more than raw param count
+    // Qwen-4B has 36 layers vs Qwen-1.7B's 28 → 29% deeper = more error accumulation
+    
+    if (n_layers <= 30) {
+        // Shallow models (≤30 layers): Full 50% FFN coverage - outliers very effective
+        return 0.50f;
+    } else if (n_layers <= 40) {
+        // Medium models (31-40 layers): Reduce to 30% FFN coverage
+        // Focus outlier budget on attn_v which has higher impact per layer
+        return 0.30f;
+    } else if (n_layers <= 60) {
+        // Deep models (41-60 layers): Only 15% FFN coverage
+        return 0.15f;
+    } else {
+        // Very deep models (60+ layers): Skip FFN, focus entirely on attn_v
+        return 0.0f;
+    }
+}
+
+// Legacy function for backward compatibility (still considers param count)
+static float q4_hifi_get_ffn_coverage(int64_t param_count) {
+    if (param_count <= 10000000000LL)   return 0.50f;  // ≤10B:  50% of ffn_down layers
+    if (param_count <= 70000000000LL)   return 0.25f;  // 10B-70B: 25% of ffn_down layers
+    return 0.0f;                                        // >70B: 0% (attn_v only)
+}
+
+// ====================== STRATEGY 3: Dynamic Outlier Budget Allocation ======================
+// Allocate more outliers to early/middle layers, fewer to final layers
+// Research shows early layers dominate attention quality; late layers are less sensitive
+
+static int q4_hifi_get_layer_outliers(int base_outliers, int layer_idx, int total_layers) {
+    // Calculate depth ratio (0.0 = first layer, 1.0 = last layer)
+    float depth_ratio = (float)layer_idx / (float)total_layers;
+    
+    if (depth_ratio < 0.4f) {
+        // Early layers (first 40%): Full outlier budget - most sensitive to quantization
+        return base_outliers;
+    } else if (depth_ratio < 0.7f) {
+        // Middle layers (40-70%): 75% of budget
+        return (int)(base_outliers * 0.75f);
+    } else {
+        // Late layers (final 30%): 50% of budget - less impact on output quality
+        return base_outliers / 2;
+    }
+}
+
+// Base outlier count based on model size (unchanged from original)
 static int q4_hifi_get_base_outliers(int64_t param_count) {
     if (param_count <= 3000000000LL)  return 8;   // ≤3B:    8 outliers
     if (param_count <= 30000000000LL) return 10;  // 3B-30B: 10 outliers
@@ -89,14 +164,6 @@ static int q4_hifi_get_base_outliers(int64_t param_count) {
 
 static int q4_hifi_get_massive_outliers(int64_t param_count) {
     return q4_hifi_get_base_outliers(param_count) * 2;
-}
-
-// Scale-aware tensor coverage: reduce ffn_down coverage on large models
-// Large models benefit less from outlier preservation (diminishing returns)
-static float q4_hifi_get_ffn_coverage(int64_t param_count) {
-    if (param_count <= 10000000000LL)   return 0.50f;  // ≤10B:  50% of ffn_down layers
-    if (param_count <= 70000000000LL)   return 0.25f;  // 10B-70B: 25% of ffn_down layers
-    return 0.0f;                                        // >70B: 0% (attn_v only)
 }
 
 // Check if a tensor is a "massive" layer that benefits from extra outliers
@@ -110,6 +177,24 @@ static bool q4_hifi_is_massive_tensor(const std::string & name) {
     if (name.find("tok_embeddings") != std::string::npos) return true;
     
     return false;
+}
+
+// Extract layer index from tensor name (e.g., "blk.15.attn_v.weight" → 15)
+static int q4_hifi_get_layer_from_name(const std::string & name) {
+    // Look for "blk.N." pattern
+    size_t blk_pos = name.find("blk.");
+    if (blk_pos == std::string::npos) {
+        return -1;  // Not a layer tensor
+    }
+    
+    size_t num_start = blk_pos + 4;
+    size_t num_end = name.find('.', num_start);
+    if (num_end == std::string::npos) {
+        return -1;
+    }
+    
+    std::string num_str = name.substr(num_start, num_end - num_start);
+    return std::stoi(num_str);
 }
 
 struct quantize_state_impl {
@@ -133,35 +218,73 @@ struct quantize_state_impl {
     // used to figure out if a model shares tok_embd with the output weight
     bool has_output = false;
 
-    // Q4_HIFI: parameter-based adaptive outlier counts
+    // ====================== Q4_HIFI Adaptive Configuration ======================
+    // Three-strategy system for competitive performance across all model sizes
     int64_t total_params = 0;
+    int q4_hifi_n_layers = 0;              // Strategy 2: Layer count for architecture-aware selection
     int q4_hifi_base_outliers = 16;
     int q4_hifi_massive_outliers = 32;
-    float q4_hifi_ffn_coverage = 0.5f;  // fraction of ffn_down layers to use Q4_HIFI
+    float q4_hifi_ffn_coverage = 0.5f;     // Fraction of ffn_down layers to use Q4_HIFI
+    ggml_type q4_hifi_base_type = GGML_TYPE_Q4_K;  // Strategy 1: Adaptive base precision
 
     quantize_state_impl(const llama_model & model, const llama_model_quantize_params * params)
         : model(model)
         , params(params)
         {}
     
-    // Initialize Q4_HIFI outlier counts and coverage based on total parameter count
-    void init_q4_hifi_outliers(int64_t param_count) {
+    // Initialize Q4_HIFI with all three strategies based on model architecture
+    void init_q4_hifi_adaptive(int64_t param_count, int n_layers) {
         total_params = param_count;
+        q4_hifi_n_layers = n_layers;
+        
+        // Strategy 1: Determine base quantization type based on model size
+        q4_hifi_base_type = q4_hifi_get_base_quant_type(param_count);
+        
+        // Strategy 2: Use architecture-aware FFN coverage (considers layer depth)
+        q4_hifi_ffn_coverage = q4_hifi_get_ffn_coverage_by_architecture(param_count, n_layers);
+        
+        // Base outlier counts (will be adjusted per-layer by Strategy 3)
         q4_hifi_base_outliers = q4_hifi_get_base_outliers(param_count);
         q4_hifi_massive_outliers = q4_hifi_get_massive_outliers(param_count);
-        q4_hifi_ffn_coverage = q4_hifi_get_ffn_coverage(param_count);
         
-        LLAMA_LOG_INFO("%s: Q4_HIFI detected %.2fB params -> outliers=%d/%d, ffn_coverage=%.0f%%\n",
-                       __func__, param_count / 1e9, q4_hifi_base_outliers, q4_hifi_massive_outliers,
-                       q4_hifi_ffn_coverage * 100);
+        // Log the adaptive configuration
+        const char * base_type_name = ggml_type_name(q4_hifi_base_type);
+        LLAMA_LOG_INFO("\n%s: Q4_HIFI Adaptive System Initialized\n", __func__);
+        LLAMA_LOG_INFO("%s:   Model: %.2fB params, %d layers\n", __func__, param_count / 1e9, n_layers);
+        LLAMA_LOG_INFO("%s:   Strategy 1 - Base Precision: %s (hybrid approach for 4B+ models)\n", __func__, base_type_name);
+        LLAMA_LOG_INFO("%s:   Strategy 2 - FFN Coverage: %.0f%% (architecture-aware)\n", __func__, q4_hifi_ffn_coverage * 100);
+        LLAMA_LOG_INFO("%s:   Strategy 3 - Outlier Budget: %d base, %d massive (layer-adaptive)\n", __func__, q4_hifi_base_outliers, q4_hifi_massive_outliers);
+        
+        // Log expected improvements for 4B+ models
+        if (param_count > 3000000000LL) {
+            LLAMA_LOG_INFO("%s:   Note: Using hybrid precision to compete with Q4_K_M at scale\n", __func__);
+        }
     }
     
-    // Get outlier count for a specific tensor
+    // Legacy initializer for backward compatibility
+    void init_q4_hifi_outliers(int64_t param_count) {
+        init_q4_hifi_adaptive(param_count, (int)model.hparams.n_layer);
+    }
+    
+    // Get outlier count for a specific tensor (Strategy 3: layer-adaptive)
     int get_q4_hifi_outliers(const std::string & tensor_name) const {
+        // Massive tensors always get full budget (they're not layer-specific)
         if (q4_hifi_is_massive_tensor(tensor_name)) {
             return q4_hifi_massive_outliers;
         }
+        
+        // Strategy 3: Adjust outliers based on layer depth
+        int layer_idx = q4_hifi_get_layer_from_name(tensor_name);
+        if (layer_idx >= 0 && q4_hifi_n_layers > 0) {
+            return q4_hifi_get_layer_outliers(q4_hifi_base_outliers, layer_idx, q4_hifi_n_layers);
+        }
+        
         return q4_hifi_base_outliers;
+    }
+    
+    // Get the base quantization type for non-HIFI tensors (Strategy 1)
+    ggml_type get_q4_hifi_base_type() const {
+        return q4_hifi_base_type;
     }
 };
 
@@ -400,12 +523,20 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
         else if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_XXS) {
             new_type = GGML_TYPE_IQ2_S;
         }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
+            // Strategy 1: Use hybrid base precision for attn_k
+            new_type = qs.get_q4_hifi_base_type();
+        }
     } else if (name.find("attn_q.weight") != std::string::npos) {
         if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_XS) {
             new_type = GGML_TYPE_IQ3_XXS;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_XXS) {
             new_type = GGML_TYPE_IQ2_S;
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
+            // Strategy 1: Use hybrid base precision for attn_q
+            new_type = qs.get_q4_hifi_base_type();
         }
     } else if (name.find("ffn_down") != std::string::npos) {
         auto info = layer_info(qs.i_ffn_down, qs.n_ffn_down, name.c_str());
@@ -429,10 +560,15 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
                      : GGML_TYPE_Q3_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
-            // Scale-aware Q4_HIFI: coverage reduces with model size (50% → 25% → 0%)
-            // Large models (>70B) skip ffn_down entirely (attn_v only provides better value)
+            // Strategy 1+2 combined: Architecture-aware FFN coverage with hybrid base precision
+            // FFN coverage determined by layer depth (Strategy 2), fallback uses adaptive base (Strategy 1)
             int coverage_layers = (int)(n_layer * qs.q4_hifi_ffn_coverage);
-            new_type = i_layer < coverage_layers ? GGML_TYPE_Q4_HIFI : GGML_TYPE_Q4_K;
+            if (i_layer < coverage_layers) {
+                new_type = GGML_TYPE_Q4_HIFI;
+            } else {
+                // Use hybrid base precision for non-HIFI layers (Q5_K for 4B+, Q6_K for 10B+)
+                new_type = qs.get_q4_hifi_base_type();
+            }
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_M && (i_layer < n_layer/8 ||
                     (qs.model.hparams.n_expert == 8 && use_more_bits(i_layer, n_layer)))) {
@@ -478,6 +614,10 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
                 else if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_XXS) new_type = GGML_TYPE_IQ3_S;
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_M ) new_type = GGML_TYPE_Q4_K;
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_HIFI) new_type = GGML_TYPE_Q4_K;
+                else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
+                    // Strategy 1: Use hybrid base precision for attn_output (sensitive layer)
+                    new_type = qs.get_q4_hifi_base_type();
+                }
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_L ) new_type = GGML_TYPE_Q5_K;
                 else if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_M  ) new_type = GGML_TYPE_Q4_K;
             }
@@ -490,6 +630,10 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             ftype == LLAMA_FTYPE_MOSTLY_Q3_HIFI) {
             new_type = GGML_TYPE_Q4_K;
         }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
+            // Strategy 1: Use hybrid base precision for attn_qkv (fused attention weights)
+            new_type = qs.get_q4_hifi_base_type();
+        }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_K_M) new_type = GGML_TYPE_Q5_K;
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q5_K_M) new_type = GGML_TYPE_Q6_K;
     }
@@ -499,6 +643,10 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
         if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_XS && (i_layer >= n_layer/8 && i_layer < 7*n_layer/8)) {
             new_type = GGML_TYPE_IQ3_XXS;
         }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
+            // Strategy 1: Use hybrid base precision for ffn_gate (matches Q4_K_M approach)
+            new_type = qs.get_q4_hifi_base_type();
+        }
         ++qs.i_ffn_gate;
     }
     else if (name.find("ffn_up") != std::string::npos) {
@@ -506,6 +654,10 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
         int i_layer = info.first, n_layer = info.second;
         if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_XS && (i_layer >= n_layer/8 && i_layer < 7*n_layer/8)) {
             new_type = GGML_TYPE_IQ3_XXS;
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_HIFI) {
+            // Strategy 1: Use hybrid base precision for ffn_up (matches Q4_K_M approach)
+            new_type = qs.get_q4_hifi_base_type();
         }
         ++qs.i_ffn_up;
     }

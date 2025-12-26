@@ -427,7 +427,8 @@ extern "C" {
         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
         GGML_TYPE_Q3_HIFI = 40, // Q3_HIFI: Q3_K layout + 8 FP16 outliers per block
         GGML_TYPE_Q4_HIFI = 41, // Q4_HIFI: Q4_K layout + adaptive FP16 outliers (8-32) per block
-        GGML_TYPE_COUNT   = 42,
+        GGML_TYPE_Q4_HIFI_RESIDUAL = 42, // Q4_HIFI_RESIDUAL: Q4_K + INT8 residuals (revolutionary!)
+        GGML_TYPE_COUNT   = 43,
     };
 
     // precision

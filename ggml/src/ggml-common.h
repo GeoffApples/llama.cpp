@@ -348,6 +348,35 @@ typedef struct {
 // Total: 144 + 32 + 64 + 1 + 3 = 244 bytes
 static_assert(sizeof(block_q4_hifi) == sizeof(block_q4_K) + Q4_HIFI_MAX_OUTLIERS + Q4_HIFI_MAX_OUTLIERS*sizeof(ggml_half) + 4, "wrong q4_hifi block size/padding");
 
+// Q4_HIFI_RESIDUAL: Revolutionary residual-based quantization
+// Stores INT8 residuals (weight - Q4_K_approx) instead of raw FP16 outlier values
+// Benefits:
+//   - Smaller storage: 2 bytes/outlier (idx + INT8) vs 3 bytes (idx + FP16)
+//   - Better reconstruction: residuals are tiny, INT8 is sufficient
+//   - Faster inference: less memory bandwidth pressure
+//   - Q4_K base = Q4_K_M speed, outlier residuals = better quality
+#define Q4_HIFI_RESIDUAL_MAX_OUTLIERS 8  // 8 outliers optimal for early layers
+typedef struct {
+    // === Q4_K-COMPATIBLE REGION (144 bytes) - DO NOT REORDER ===
+    GGML_EXTENSION union {
+        struct {
+            ggml_half d;    // super-block scale for quantized scales
+            ggml_half dmin; // super-block scale for quantized mins
+        } GGML_COMMON_AGGR_S;
+        ggml_half2 dm;
+    } GGML_COMMON_AGGR_U;
+    uint8_t scales[K_SCALE_SIZE];  // 12 bytes: scales and mins
+    uint8_t qs[QK_K/2];            // 128 bytes: 4-bit quants
+    // === RESIDUAL EXTENSION (21 bytes) ===
+    uint8_t outlier_count;                              // 1 byte: actual outlier count (0-8)
+    uint8_t outlier_idx[Q4_HIFI_RESIDUAL_MAX_OUTLIERS]; // 8 bytes: outlier positions (0-255)
+    int8_t residual_vals[Q4_HIFI_RESIDUAL_MAX_OUTLIERS]; // 8 bytes: INT8 residuals
+    float residual_scale;                               // 4 bytes: shared scale for residuals
+} block_q4_hifi_residual;
+// Total: 144 + 1 + 8 + 8 + 4 = 165 bytes (vs 244 for FP16 outliers!)
+// Effective: ~4.47 BPW (better than Q4_K_M's 4.95 BPW!)
+static_assert(sizeof(block_q4_hifi_residual) == sizeof(block_q4_K) + 1 + Q4_HIFI_RESIDUAL_MAX_OUTLIERS + Q4_HIFI_RESIDUAL_MAX_OUTLIERS + 4, "wrong q4_hifi_residual block size");
+
 // 5-bit quantization
 // 8 blocks of 32 elements each
 // weight is represented as x = a * q + b

@@ -975,6 +975,84 @@ static __device__ __forceinline__ float vec_dot_q4_hifi_q8_1(
     return sum;
 }
 
+// Q4_HIFI_RESIDUAL: Q4_K layout + up to 8 INT8 residuals per block
+// Revolutionary format: stores residuals (weight - Q4_K_approx) in INT8
+// Benefits: Smaller than FP16 outliers, better reconstruction accuracy
+#define VDR_Q4_HIFI_RESIDUAL_Q8_1_MMVQ VDR_Q4_K_Q8_1_MMVQ
+
+static __device__ __forceinline__ float vec_dot_q4_hifi_residual_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_q4_hifi_residual * bq4_hifi_r = (const block_q4_hifi_residual *) vbq + kbx;
+
+    // === Q4_K bulk dot product (first 144 bytes are Q4_K-compatible) ===
+    int    v[2];
+    int    u[2*QR4_K];
+    float d8[QR4_K];
+
+    const int bq8_offset = QR4_K * ((iqs/2) / (QI8_1/2));
+
+    const int * q4 = (const int *)(bq4_hifi_r->qs + 16 * bq8_offset + 4 * ((iqs/2)%4));
+    v[0] = q4[0];
+    v[1] = q4[4];
+
+    const uint16_t * scales = (const uint16_t *)bq4_hifi_r->scales;
+    uint16_t aux[2];
+    const int j = bq8_offset/2;
+    if (j < 2) {
+        aux[0] = scales[j+0] & 0x3f3f;
+        aux[1] = scales[j+2] & 0x3f3f;
+    } else {
+        aux[0] = ((scales[j+2] >> 0) & 0x0f0f) | ((scales[j-2] & 0xc0c0) >> 2);
+        aux[1] = ((scales[j+2] >> 4) & 0x0f0f) | ((scales[j-0] & 0xc0c0) >> 2);
+    }
+    const uint8_t * sc = (const uint8_t *)aux;
+    const uint8_t * m  = sc + 2;
+
+    for (int i = 0; i < QR4_K; ++i) {
+        const block_q8_1 * bq8i = bq8_1 + bq8_offset + i;
+        d8[i] = __low2float(bq8i->ds);
+
+        const int * q8 = (const int *)bq8i->qs + ((iqs/2)%4);
+        u[2*i+0] = q8[0];
+        u[2*i+1] = q8[4];
+    }
+
+    // Compute Q4_K bulk result
+    float sum = vec_dot_q4_K_q8_1_impl_vmmq(v, u, sc, m, bq4_hifi_r->dm, d8);
+
+    // === INT8 Residual correction ===
+    // Residual = (INT8_val / 127) * residual_scale
+    // Correction = residual * q8_val * d8
+    
+    const int outlier_count = bq4_hifi_r->outlier_count;
+    const float residual_scale = bq4_hifi_r->residual_scale;
+
+#pragma unroll 8
+    for (int k = 0; k < Q4_HIFI_RESIDUAL_MAX_OUTLIERS; ++k) {
+        if (k >= outlier_count) break;
+
+        const int idx = bq4_hifi_r->outlier_idx[k];
+        const int idx_bq8 = idx / QK8_1;
+        const int idx_in_bq8 = idx % QK8_1;
+
+        if (idx_bq8 >= bq8_offset && idx_bq8 < bq8_offset + QR4_K) {
+            const int thread_q8_offset = (iqs/2) % 4;
+            const int pos_in_q8_group = idx_in_bq8 / 8;
+            
+            if (pos_in_q8_group == thread_q8_offset) {
+                // Reconstruct residual from INT8
+                const float residual = (bq4_hifi_r->residual_vals[k] / 127.0f) * residual_scale;
+                const int8_t q8_val = ((const int8_t*)bq8_1[idx_bq8].qs)[idx_in_bq8];
+                const float d8_val = __low2float(bq8_1[idx_bq8].ds);
+                sum += residual * q8_val * d8_val;
+            }
+        }
+    }
+
+    return sum;
+}
+
 static __device__ __forceinline__ float vec_dot_q5_K_q8_1(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
 

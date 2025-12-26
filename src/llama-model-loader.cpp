@@ -666,6 +666,7 @@ llama_model_loader::llama_model_loader(
             case GGML_TYPE_IQ3_S:   ftype = LLAMA_FTYPE_MOSTLY_IQ3_S;   break;
             case GGML_TYPE_Q3_HIFI: ftype = LLAMA_FTYPE_MOSTLY_Q3_HIFI; break;
             case GGML_TYPE_Q4_HIFI: ftype = LLAMA_FTYPE_MOSTLY_Q4_HIFI; break;
+            case GGML_TYPE_Q4_HIFI_RESIDUAL: ftype = LLAMA_FTYPE_MOSTLY_Q4_HIFI_RESIDUAL; break;
             default:
                 {
                     LLAMA_LOG_WARN("%s: unknown type %s\n", __func__, ggml_type_name(type_max));

@@ -5406,6 +5406,7 @@ static vk_pipeline ggml_vk_get_to_fp16(ggml_backend_vk_context * ctx, ggml_type 
         case GGML_TYPE_Q3_K:
         case GGML_TYPE_Q3_HIFI:
         case GGML_TYPE_Q4_HIFI:
+        case GGML_TYPE_Q4_HIFI_RESIDUAL:
         case GGML_TYPE_Q4_K:
         case GGML_TYPE_Q5_K:
         case GGML_TYPE_Q6_K:
@@ -5479,6 +5480,7 @@ static vk_matmul_pipeline ggml_vk_get_mul_mat_mat_pipeline(ggml_backend_vk_conte
         case GGML_TYPE_Q3_K:
         case GGML_TYPE_Q3_HIFI:
         case GGML_TYPE_Q4_HIFI:
+        case GGML_TYPE_Q4_HIFI_RESIDUAL:
         case GGML_TYPE_Q4_K:
         case GGML_TYPE_Q5_K:
         case GGML_TYPE_Q6_K:
@@ -5544,6 +5546,7 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec(ggml_backend_vk_context * 
         case GGML_TYPE_Q3_K:
         case GGML_TYPE_Q3_HIFI:
         case GGML_TYPE_Q4_HIFI:
+        case GGML_TYPE_Q4_HIFI_RESIDUAL:
         case GGML_TYPE_Q4_K:
         case GGML_TYPE_Q5_K:
         case GGML_TYPE_Q6_K:
@@ -5636,6 +5639,7 @@ static vk_matmul_pipeline ggml_vk_get_mul_mat_mat_id_pipeline(ggml_backend_vk_co
         case GGML_TYPE_Q3_K:
         case GGML_TYPE_Q3_HIFI:
         case GGML_TYPE_Q4_HIFI:
+        case GGML_TYPE_Q4_HIFI_RESIDUAL:
         case GGML_TYPE_Q4_K:
         case GGML_TYPE_Q5_K:
         case GGML_TYPE_Q6_K:
@@ -5704,6 +5708,7 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec_id(ggml_backend_vk_context
         case GGML_TYPE_Q3_K:
         case GGML_TYPE_Q3_HIFI:
         case GGML_TYPE_Q4_HIFI:
+        case GGML_TYPE_Q4_HIFI_RESIDUAL:
         case GGML_TYPE_Q4_K:
         case GGML_TYPE_Q5_K:
         case GGML_TYPE_Q6_K:

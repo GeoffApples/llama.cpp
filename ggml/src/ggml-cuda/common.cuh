@@ -840,6 +840,13 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q4_HIFI> {
 };
 
 template<>
+struct ggml_cuda_type_traits<GGML_TYPE_Q4_HIFI_RESIDUAL> {
+    static constexpr int qk = QK_K;
+    static constexpr int qr = QR4_K;
+    static constexpr int qi = QI4_K;
+};
+
+template<>
 struct ggml_cuda_type_traits<GGML_TYPE_Q4_K> {
     static constexpr int qk = QK_K;
     static constexpr int qr = QR4_K;

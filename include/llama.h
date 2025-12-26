@@ -156,6 +156,7 @@ extern "C" {
         // LLAMA_FTYPE_MOSTLY_Q3_HIFI_UNIFORM = 40, // removed - uniform version, superseded by adaptive
         LLAMA_FTYPE_MOSTLY_Q3_HIFI       = 41, // Adaptive: Q3_HIFI on sensitive layers, Q4_K/Q3_K elsewhere
         LLAMA_FTYPE_MOSTLY_Q4_HIFI       = 42, // Q4_HIFI: parameter-driven adaptive outliers (8-32 per block)
+        LLAMA_FTYPE_MOSTLY_Q4_HIFI_RESIDUAL = 43, // Q4_HIFI_RESIDUAL: Q4_K + INT8 residuals (revolutionary!)
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };

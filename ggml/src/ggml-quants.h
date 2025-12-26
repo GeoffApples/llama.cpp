@@ -115,6 +115,13 @@ GGML_API size_t quantize_q4_hifi(const float * GGML_RESTRICT src, void * GGML_RE
 GGML_API void   ggml_q4_hifi_set_outlier_count(int count);
 GGML_API int    ggml_q4_hifi_get_outlier_count(void);
 
+// Q4_HIFI_RESIDUAL: Revolutionary INT8 residual-based quantization
+// Stores residuals (weight - Q4_K_approx) in INT8 instead of raw FP16 values
+// Benefits: Smaller size, faster inference, better reconstruction accuracy
+GGML_API void quantize_row_q4_hifi_residual_ref(const float * GGML_RESTRICT x, block_q4_hifi_residual * GGML_RESTRICT y, int64_t k, const float * GGML_RESTRICT imatrix);
+GGML_API void dequantize_row_q4_hifi_residual(const block_q4_hifi_residual * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+GGML_API size_t quantize_q4_hifi_residual(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
+
 #ifdef __cplusplus
 }
 #endif

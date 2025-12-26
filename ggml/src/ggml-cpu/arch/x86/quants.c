@@ -2138,6 +2138,15 @@ void ggml_vec_dot_q4_hifi_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const 
 #endif
 }
 
+// Q4_HIFI_RESIDUAL vec_dot - x86 implementation
+// Uses Q4_K bulk computation + INT8 residual corrections
+// Falls back to generic for now; AVX2 optimization can be added later
+void ggml_vec_dot_q4_hifi_residual_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    // For now, use generic implementation
+    // TODO: Add AVX2-optimized version with SIMD residual correction
+    ggml_vec_dot_q4_hifi_residual_q8_K_generic(n, s, bs, vx, bx, vy, by, nrc);
+}
+
 void ggml_vec_dot_q5_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy,  size_t by, int nrc) {
     assert(n % QK_K == 0);
     assert(nrc == 1);

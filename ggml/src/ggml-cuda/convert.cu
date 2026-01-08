@@ -777,14 +777,13 @@ static __global__ void dequantize_block_q3_k_hifi_res4(const void * __restrict__
         const int64_t idx1 = 128*is + 32*(k % 2) + l0 + 8 * (k / 2);
         const int64_t idx2 = idx1 + 128;
 
-        const int shift1 = 2*(k % 2);
-        const int shift2 = 2*(k % 2) + 4*ir;
+        const int shift = 2*(k % 2);
 
         const uint8_t hm1 = (hm[0] >> (2*k + 0)) & 1;
         const uint8_t hm2 = (hm[0] >> (2*k + 1)) & 1;
 
-        const int q1 = ((qs[k*16 + 0] >> shift1) & 3) | ((hm1 ^ 1) << 2);
-        const int q2 = ((qs[k*16 + 16] >> shift1) & 3) | ((hm2 ^ 1) << 2);
+        const int q1 = ((qs[k*16 + 0] >> shift) & 3) | ((hm1 ^ 1) << 2);
+        const int q2 = ((qs[k*16 + 16] >> shift) & 3) | ((hm2 ^ 1) << 2);
 
         yb[idx1] = d1 * (q1 - 4);
         yb[idx2] = d2 * (q2 - 4);

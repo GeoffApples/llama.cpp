@@ -699,7 +699,6 @@ void ggml_vec_dot_q3_k_hifi_res4_q8_K_generic(int n, float * GGML_RESTRICT s, si
         const uint8_t * GGML_RESTRICT q = xb->qs;
         const uint8_t * GGML_RESTRICT hm = xb->hmask;
         const int8_t  * GGML_RESTRICT q8 = yb->qs;
-        uint8_t m = 1;
 
         // Decode scales from 6-bit packed format (same as Q3_K)
         memcpy(aux, xb->scales, 12);

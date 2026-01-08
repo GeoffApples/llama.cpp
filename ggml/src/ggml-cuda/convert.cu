@@ -744,55 +744,48 @@ static void dequantize_row_q3_k_hifi_cuda(const void * vx, dst_t * y, const int6
 }
 
 // Q3_K_HIFI_RES4: Q3_K-compatible layout with 4 INT8 residuals per block
+// Uses exact Q3_K dequantization for bulk, then adds residual corrections
 template<typename dst_t>
 static __global__ void dequantize_block_q3_k_hifi_res4(const void * __restrict__ vx, dst_t * __restrict__ yy) {
     const int64_t i = blockIdx.x;
     const block_q3_k_hifi_res4 * x = (const block_q3_k_hifi_res4 *) vx;
 
-    // Same Q3_K dequantization logic
-    const int64_t tid = threadIdx.x;
-    const int64_t is  = tid / 16;
-    const int64_t il  = tid % 16;
-    const int64_t ir  = il / 8;
-    const int64_t l0  = 16 * ir + il % 8;
+    // Exact Q3_K dequantization algorithm (matches dequantize_block_q3_K)
+    const int64_t r = threadIdx.x/4;
+    const int64_t tid = r/2;
+    const int64_t is0 = r%2;
+    const int64_t l0 = 16*is0 + 4*(threadIdx.x%4);
+    const int64_t n = tid / 4;
+    const int64_t j = tid - 4*n;
 
-    dst_t * yb = yy + i*QK_K;
+    uint8_t m = 1 << (4*n + j);
+    int64_t is = 8*n + 2*j + is0;
+    int shift = 2*j;
 
-    const float d = __half2float(x[i].d);
+    int8_t us = is <  4 ? (x[i].scales[is-0] & 0xF) | (((x[i].scales[is+8] >> 0) & 3) << 4) :
+                is <  8 ? (x[i].scales[is-0] & 0xF) | (((x[i].scales[is+4] >> 2) & 3) << 4) :
+                is < 12 ? (x[i].scales[is-8] >>  4) | (((x[i].scales[is+0] >> 4) & 3) << 4) :
+                          (x[i].scales[is-8] >>  4) | (((x[i].scales[is-4] >> 6) & 3) << 4);
+    float d_all = __half2float(x[i].d);
+    float dl = d_all * (us - 32);
 
-    const uint8_t * qs = x[i].qs + 32*is + l0;
-    const uint8_t * hm = x[i].hmask + l0;
+    dst_t * y = yy + i*QK_K + 128*n + 32*j;
+    const uint8_t * q = x[i].qs + 32*n;
+    const uint8_t * hm = x[i].hmask;
 
-    // Unpack scales
-    const int8_t * scales = (const int8_t *)x[i].scales + is;
-    const uint8_t sc1 = scales[0] & 0xF;
-    const uint8_t sh1 = (scales[4] >> (2 * is + 0)) & 3;
-    const uint8_t sc2 = scales[0] >> 4;
-    const uint8_t sh2 = (scales[4] >> (2 * is + 1)) & 3;
-
-    const float d1 = d * ((int)(sc1 | (sh1 << 4)) - 32);
-    const float d2 = d * ((int)(sc2 | (sh2 << 4)) - 32);
-
-    for (int64_t k = 0; k < 4; ++k) {
-        const int64_t idx1 = 128*is + 32*(k % 2) + l0 + 8 * (k / 2);
-        const int64_t idx2 = idx1 + 128;
-
-        const int shift = 2*(k % 2);
-
-        const uint8_t hm1 = (hm[0] >> (2*k + 0)) & 1;
-        const uint8_t hm2 = (hm[0] >> (2*k + 1)) & 1;
-
-        const int q1 = ((qs[k*16 + 0] >> shift) & 3) | ((hm1 ^ 1) << 2);
-        const int q2 = ((qs[k*16 + 16] >> shift) & 3) | ((hm2 ^ 1) << 2);
-
-        yb[idx1] = d1 * (q1 - 4);
-        yb[idx2] = d2 * (q2 - 4);
+    for (int l = l0; l < l0+4; ++l) {
+        y[l] = dl * ((int8_t)((q[l] >> shift) & 3) - ((hm[l] & m) ? 0 : 4));
     }
 
-    // Apply residual corrections (only thread 0 handles this to avoid race conditions)
+    // Synchronize before applying residuals
+    __syncthreads();
+
+    // Thread 0 handles residual corrections
     if (threadIdx.x == 0) {
+        dst_t * yb = yy + i*QK_K;
         const float res_scale = __half2float(x[i].residual_scale);
         const int outlier_count = x[i].outlier_count;
+        #pragma unroll
         for (int k = 0; k < Q3_K_HIFI_RES4_OUTLIERS && k < outlier_count; ++k) {
             const int idx = x[i].outlier_idx[k];
             const float residual = res_scale * (x[i].residual_vals[k] / 127.0f);

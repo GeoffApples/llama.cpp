@@ -1424,6 +1424,183 @@ size_t quantize_q3_k_hifi(const float * GGML_RESTRICT src, void * GGML_RESTRICT 
     return nrow * row_size;
 }
 
+// ====================== Q3_K_HIFI_RES4: Q3_K + 4 INT8 residuals (optimized BPW) ======================
+// Uses Q3_K base (110 bytes) + 13 bytes residual extension = 123 bytes total
+// Target BPW: ~3.84 (vs Q3_K_HIFI's 4.19), smaller files, faster inference
+// Best for: ≤0.7B models where imatrix isn't available
+
+void quantize_row_q3_k_hifi_res4_ref(const float * GGML_RESTRICT x, block_q3_k_hifi_res4 * GGML_RESTRICT y, int64_t k) {
+    assert(k % Q3_K_HIFI_RES4_BLOCK_SIZE == 0);
+    const int64_t nb = k / Q3_K_HIFI_RES4_BLOCK_SIZE;
+
+    for (int64_t ib = 0; ib < nb; ++ib) {
+        const float * xb = x + ib * Q3_K_HIFI_RES4_BLOCK_SIZE;
+        block_q3_k_hifi_res4 * block = &y[ib];
+
+        // Step 1: Find top-4 outliers by magnitude
+        float mag[Q3_K_HIFI_RES4_BLOCK_SIZE];
+        for (int i = 0; i < Q3_K_HIFI_RES4_BLOCK_SIZE; ++i) {
+            mag[i] = fabsf(xb[i]);
+        }
+
+        int outlier_indices[Q3_K_HIFI_RES4_OUTLIERS];
+        for (int k_idx = 0; k_idx < Q3_K_HIFI_RES4_OUTLIERS; ++k_idx) {
+            int argmax = 0;
+            float max_val = mag[0];
+            for (int i = 1; i < Q3_K_HIFI_RES4_BLOCK_SIZE; ++i) {
+                if (mag[i] > max_val) {
+                    max_val = mag[i];
+                    argmax = i;
+                }
+            }
+            outlier_indices[k_idx] = argmax;
+            mag[argmax] = -1.0f;  // mask out
+        }
+
+        // Step 2: Quantize the full block as Q3_K (don't zero outliers - compute residuals instead)
+        block_q3_K q3k_block;
+        quantize_row_q3_K_ref(xb, &q3k_block, Q3_K_HIFI_RES4_BLOCK_SIZE);
+
+        // Step 3: Copy Q3_K fields to our block (first 110 bytes are identical layout)
+        memcpy(block->hmask, q3k_block.hmask, sizeof(block->hmask));
+        memcpy(block->qs, q3k_block.qs, sizeof(block->qs));
+        memcpy(block->scales, q3k_block.scales, sizeof(block->scales));
+        block->d = q3k_block.d;
+
+        // Step 4: Dequantize Q3_K to compute residuals
+        float q3k_dequant[Q3_K_HIFI_RES4_BLOCK_SIZE];
+        dequantize_row_q3_K(&q3k_block, q3k_dequant, Q3_K_HIFI_RES4_BLOCK_SIZE);
+
+        // Step 5: Compute residuals and find max for scaling
+        float residuals[Q3_K_HIFI_RES4_OUTLIERS];
+        float max_residual = 0.0f;
+        for (int k_idx = 0; k_idx < Q3_K_HIFI_RES4_OUTLIERS; ++k_idx) {
+            const int idx = outlier_indices[k_idx];
+            residuals[k_idx] = xb[idx] - q3k_dequant[idx];
+            max_residual = MAX(max_residual, fabsf(residuals[k_idx]));
+        }
+
+        // Handle zero case
+        if (max_residual < 1e-8f) max_residual = 1e-8f;
+        block->residual_scale = max_residual;
+        block->outlier_count = Q3_K_HIFI_RES4_OUTLIERS;
+
+        // Step 6: Store outlier indices and INT8 residuals
+        for (int k_idx = 0; k_idx < Q3_K_HIFI_RES4_OUTLIERS; ++k_idx) {
+            block->outlier_idx[k_idx] = (uint8_t)outlier_indices[k_idx];
+            float norm_residual = residuals[k_idx] / max_residual;
+            // Clamp to [-1, 1] and scale to INT8 range [-127, 127]
+            norm_residual = MAX(-1.0f, MIN(1.0f, norm_residual));
+            block->residual_vals[k_idx] = (int8_t)roundf(norm_residual * 127.0f);
+        }
+    }
+}
+
+static void quantize_row_q3_k_hifi_res4_impl(const float * GGML_RESTRICT x, block_q3_k_hifi_res4 * GGML_RESTRICT y, int64_t k, const float * GGML_RESTRICT quant_weights) {
+    assert(k % Q3_K_HIFI_RES4_BLOCK_SIZE == 0);
+    const int64_t nb = k / Q3_K_HIFI_RES4_BLOCK_SIZE;
+
+    for (int64_t ib = 0; ib < nb; ++ib) {
+        const float * xb = x + ib * Q3_K_HIFI_RES4_BLOCK_SIZE;
+        const float * qw = quant_weights ? quant_weights + ib * Q3_K_HIFI_RES4_BLOCK_SIZE : NULL;
+        block_q3_k_hifi_res4 * block = &y[ib];
+
+        // Step 1: Find top-4 outliers by weighted magnitude (imatrix-aware)
+        float mag[Q3_K_HIFI_RES4_BLOCK_SIZE];
+        for (int i = 0; i < Q3_K_HIFI_RES4_BLOCK_SIZE; ++i) {
+            mag[i] = fabsf(xb[i]) * (qw ? qw[i] : 1.0f);
+        }
+
+        int outlier_indices[Q3_K_HIFI_RES4_OUTLIERS];
+        for (int k_idx = 0; k_idx < Q3_K_HIFI_RES4_OUTLIERS; ++k_idx) {
+            int argmax = 0;
+            float max_val = mag[0];
+            for (int i = 1; i < Q3_K_HIFI_RES4_BLOCK_SIZE; ++i) {
+                if (mag[i] > max_val) {
+                    max_val = mag[i];
+                    argmax = i;
+                }
+            }
+            outlier_indices[k_idx] = argmax;
+            mag[argmax] = -1.0f;  // mask out
+        }
+
+        // Step 2: Quantize the full block as Q3_K
+        block_q3_K q3k_block;
+        quantize_row_q3_K_ref(xb, &q3k_block, Q3_K_HIFI_RES4_BLOCK_SIZE);
+
+        // Step 3: Copy Q3_K fields to our block
+        memcpy(block->hmask, q3k_block.hmask, sizeof(block->hmask));
+        memcpy(block->qs, q3k_block.qs, sizeof(block->qs));
+        memcpy(block->scales, q3k_block.scales, sizeof(block->scales));
+        block->d = q3k_block.d;
+
+        // Step 4: Dequantize Q3_K to compute residuals
+        float q3k_dequant[Q3_K_HIFI_RES4_BLOCK_SIZE];
+        dequantize_row_q3_K(&q3k_block, q3k_dequant, Q3_K_HIFI_RES4_BLOCK_SIZE);
+
+        // Step 5: Compute residuals and find max for scaling
+        float residuals[Q3_K_HIFI_RES4_OUTLIERS];
+        float max_residual = 0.0f;
+        for (int k_idx = 0; k_idx < Q3_K_HIFI_RES4_OUTLIERS; ++k_idx) {
+            const int idx = outlier_indices[k_idx];
+            residuals[k_idx] = xb[idx] - q3k_dequant[idx];
+            max_residual = MAX(max_residual, fabsf(residuals[k_idx]));
+        }
+
+        // Handle zero case
+        if (max_residual < 1e-8f) max_residual = 1e-8f;
+        block->residual_scale = max_residual;
+        block->outlier_count = Q3_K_HIFI_RES4_OUTLIERS;
+
+        // Step 6: Store outlier indices and INT8 residuals
+        for (int k_idx = 0; k_idx < Q3_K_HIFI_RES4_OUTLIERS; ++k_idx) {
+            block->outlier_idx[k_idx] = (uint8_t)outlier_indices[k_idx];
+            float norm_residual = residuals[k_idx] / max_residual;
+            norm_residual = MAX(-1.0f, MIN(1.0f, norm_residual));
+            block->residual_vals[k_idx] = (int8_t)roundf(norm_residual * 127.0f);
+        }
+    }
+}
+
+void dequantize_row_q3_k_hifi_res4(const block_q3_k_hifi_res4 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % Q3_K_HIFI_RES4_BLOCK_SIZE == 0);
+    const int64_t nb = k / Q3_K_HIFI_RES4_BLOCK_SIZE;
+
+    for (int64_t ib = 0; ib < nb; ++ib) {
+        const block_q3_k_hifi_res4 * block = &x[ib];
+        float * yb = y + ib * Q3_K_HIFI_RES4_BLOCK_SIZE;
+
+        // Step 1: Dequantize Q3_K base (first 110 bytes match Q3_K exactly)
+        dequantize_row_q3_K((const block_q3_K *)block, yb, Q3_K_HIFI_RES4_BLOCK_SIZE);
+
+        // Step 2: Add residual corrections to outlier positions
+        const int count = block->outlier_count;
+        for (int k_idx = 0; k_idx < count && k_idx < Q3_K_HIFI_RES4_OUTLIERS; ++k_idx) {
+            const int idx = block->outlier_idx[k_idx];
+            if (idx < Q3_K_HIFI_RES4_BLOCK_SIZE) {
+                float residual = block->residual_scale * (block->residual_vals[k_idx] / 127.0f);
+                yb[idx] += residual;
+            }
+        }
+    }
+}
+
+size_t quantize_q3_k_hifi_res4(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    const size_t row_size = ggml_row_size(GGML_TYPE_Q3_K_HIFI_RES4, n_per_row);
+    if (!quant_weights) {
+        quantize_row_q3_k_hifi_res4_ref(src, dst, nrow * n_per_row);
+    } else {
+        char * qrow = (char *)dst;
+        for (int64_t row = 0; row < nrow; ++row) {
+            quantize_row_q3_k_hifi_res4_impl(src, (block_q3_k_hifi_res4*)qrow, n_per_row, quant_weights);
+            src += n_per_row;
+            qrow += row_size;
+        }
+    }
+    return nrow * row_size;
+}
+
 // ====================== 4-bit (de)-quantization
 
 void quantize_row_q4_K_ref(const float * GGML_RESTRICT x, block_q4_K * GGML_RESTRICT y, int64_t k) {

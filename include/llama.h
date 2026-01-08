@@ -155,6 +155,7 @@ extern "C" {
         // Legacy HIFI types (39-43) removed - consolidated into Q4_K_HIFI (44)
         LLAMA_FTYPE_MOSTLY_Q4_K_HIFI     = 44, // Q4_K_M + 2-8 dynamic outliers + early exit (best quality/size ratio)
         LLAMA_FTYPE_MOSTLY_Q3_K_HIFI     = 45, // Q3_K + FP16 outliers (best 3-bit format for ≤1B models)
+        LLAMA_FTYPE_MOSTLY_Q3_K_HIFI_RES4 = 46, // Q3_K + 4 INT8 residuals (optimized BPW for ≤0.7B models)
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };

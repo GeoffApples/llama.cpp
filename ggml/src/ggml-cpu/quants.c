@@ -72,6 +72,12 @@ void quantize_row_q3_k_hifi(const float * GGML_RESTRICT x, void * GGML_RESTRICT 
     quantize_row_q3_k_hifi_ref(x, y, k);
 }
 
+void quantize_row_q3_k_hifi_res4(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
+    assert(k % Q3_K_HIFI_RES4_BLOCK_SIZE == 0);
+    block_q3_k_hifi_res4 * GGML_RESTRICT y = vy;
+    quantize_row_q3_k_hifi_res4_ref(x, y, k);
+}
+
 // ====================== 4-bit (de)-quantization
 
 void quantize_row_q4_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
@@ -661,6 +667,85 @@ void ggml_vec_dot_q3_k_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t 
 }
 
 // Note: ggml_vec_dot_q3_k_hifi_q8_K is defined in arch-specific files (x86/quants.c etc.)
+
+// Q3_K_HIFI_RES4 vec_dot: Generic implementation
+// Uses Q3_K format for bulk, adds INT8 residual corrections for top-4 outliers
+void ggml_vec_dot_q3_k_hifi_res4_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(n % Q3_K_HIFI_RES4_BLOCK_SIZE == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_q3_k_hifi_res4 * GGML_RESTRICT x = vx;
+    const block_q8_K * GGML_RESTRICT y = vy;
+    const int nb = n / Q3_K_HIFI_RES4_BLOCK_SIZE;
+
+    static const uint32_t kmask1 = 0x03030303;
+    static const uint32_t kmask2 = 0x0f0f0f0f;
+
+    uint32_t aux[4];
+    const int8_t * scales = (const int8_t*)aux;
+
+    float total_sum = 0.0f;
+
+    for (int i = 0; i < nb; ++i) {
+        const block_q3_k_hifi_res4 * xb = &x[i];
+        const block_q8_K * yb = &y[i];
+
+        const float d = GGML_FP16_TO_FP32(xb->d) * yb->d;
+
+        const uint8_t * GGML_RESTRICT q = xb->qs;
+        const uint8_t * GGML_RESTRICT hm = xb->hmask;
+        const int8_t  * GGML_RESTRICT q8 = yb->qs;
+        uint8_t m = 1;
+
+        // Decode scales from 6-bit packed format (same as Q3_K)
+        memcpy(aux, xb->scales, 12);
+        uint32_t tmp = aux[2];
+        aux[2] = ((aux[0] >> 4) & kmask2) | (((tmp >> 4) & kmask1) << 4);
+        aux[3] = ((aux[1] >> 4) & kmask2) | (((tmp >> 6) & kmask1) << 4);
+        aux[0] = (aux[0] & kmask2) | (((tmp >> 0) & kmask1) << 4);
+        aux[1] = (aux[1] & kmask2) | (((tmp >> 2) & kmask1) << 4);
+
+        int32_t sumi = 0;
+
+        // Process 256 elements in groups of 16
+        for (int j = 0; j < Q3_K_HIFI_RES4_BLOCK_SIZE / 16; ++j) {
+            const int scale = scales[j] - 32;
+            int32_t isum = 0;
+
+            for (int l = 0; l < 16; ++l) {
+                const int byte_idx = (j * 16 + l) / 4;
+                const int bit_shift = ((j * 16 + l) % 4) * 2;
+                const int lo_bits = (q[byte_idx] >> bit_shift) & 0x03;
+                const int hi_bit = (hm[(j * 16 + l) / 8] >> ((j * 16 + l) % 8)) & 1;
+                const int w = lo_bits | (hi_bit << 2);
+                isum += q8[j * 16 + l] * (w - 4);
+            }
+
+            sumi += scale * isum;
+        }
+
+        total_sum += d * sumi;
+
+        // Add INT8 residual corrections (only 4 outliers)
+        const float yd = yb->d;
+        const int count = xb->outlier_count;
+        const float residual_scale = xb->residual_scale;
+
+        for (int k = 0; k < count && k < Q3_K_HIFI_RES4_OUTLIERS; ++k) {
+            const int idx = xb->outlier_idx[k];
+            if (idx < Q3_K_HIFI_RES4_BLOCK_SIZE) {
+                float residual = residual_scale * (xb->residual_vals[k] / 127.0f);
+                total_sum += residual * yb->qs[idx] * yd;
+            }
+        }
+    }
+
+    *s = total_sum;
+}
 
 void ggml_vec_dot_q4_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % QK_K == 0);

@@ -128,3 +128,62 @@ static __device__ __forceinline__ void dequantize_q3_k_hifi(const void * vx, con
         }
     }
 }
+
+// Q3_K_HIFI_RES4: Q3_K-compatible layout with 4 INT8 residuals
+// Uses same hmask/qs/scales layout as Q3_K for the first 110 bytes
+// Residuals are INT8 normalized values with a shared FP16 scale
+static __device__ __forceinline__ void dequantize_q3_k_hifi_res4(const void * vx, const int64_t ib, const int iqs, float2 & v){
+    const block_q3_k_hifi_res4 * x = (const block_q3_k_hifi_res4 *) vx;
+
+    // Use Q3_K-style extraction
+    const float d = __half2float(x[ib].d);
+    const uint8_t * qs = x[ib].qs;
+    const uint8_t * hmask = x[ib].hmask;
+
+    // iqs is in range [0, QK_K/2) = [0, 128)
+    // We need to extract 2 values at positions iqs*2 and iqs*2+1
+    int idx0 = iqs * 2;
+    int idx1 = iqs * 2 + 1;
+
+    // Q3_K bit layout:
+    // - qs[64]: lower 2 bits packed as 4 values per byte
+    // - hmask[32]: high bit packed as 8 values per byte
+
+    // Extract first value
+    const int qs_byte0 = idx0 / 4;
+    const int qs_shift0 = (idx0 % 4) * 2;
+    const int hm_byte0 = idx0 / 8;
+    const int hm_shift0 = idx0 % 8;
+    const int lo0 = (qs[qs_byte0] >> qs_shift0) & 0x03;
+    const int hi0 = (hmask[hm_byte0] >> hm_shift0) & 0x01;
+    int quant_val0 = (lo0 | (hi0 << 2)) - 4;
+
+    // Extract second value
+    const int qs_byte1 = idx1 / 4;
+    const int qs_shift1 = (idx1 % 4) * 2;
+    const int hm_byte1 = idx1 / 8;
+    const int hm_shift1 = idx1 % 8;
+    const int lo1 = (qs[qs_byte1] >> qs_shift1) & 0x03;
+    const int hi1 = (hmask[hm_byte1] >> hm_shift1) & 0x01;
+    int quant_val1 = (lo1 | (hi1 << 2)) - 4;
+
+    v.x = quant_val0 * d;
+    v.y = quant_val1 * d;
+
+    // Check if either index has a residual correction and apply it
+    // Residuals are INT8 normalized by residual_scale
+    const float res_scale = __half2float(x[ib].residual_scale);
+    const int outlier_count = x[ib].outlier_count;
+
+    #pragma unroll
+    for (int k = 0; k < Q3_K_HIFI_RES4_OUTLIERS && k < outlier_count; ++k) {
+        if (x[ib].outlier_idx[k] == idx0) {
+            float residual = res_scale * (x[ib].residual_vals[k] / 127.0f);
+            v.x += residual;
+        }
+        if (x[ib].outlier_idx[k] == idx1) {
+            float residual = res_scale * (x[ib].residual_vals[k] / 127.0f);
+            v.y += residual;
+        }
+    }
+}

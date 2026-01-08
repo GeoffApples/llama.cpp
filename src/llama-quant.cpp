@@ -307,6 +307,10 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
                 // Q3_K_HIFI_RES4: Always enhance output.weight with INT8 residuals
                 new_type = GGML_TYPE_Q3_K_HIFI_RES4;
             }
+            else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_HIFI) {
+                // Q3_K_HIFI: Always enhance output.weight with FP16 outliers
+                new_type = GGML_TYPE_Q3_K_HIFI;
+            }
             else if (new_type != GGML_TYPE_Q8_0) {
                 new_type = GGML_TYPE_Q6_K;
             }
@@ -345,6 +349,10 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_HIFI_RES4) {
                 // Q3_K_HIFI_RES4: Always enhance token_embd with INT8 residuals
                 new_type = GGML_TYPE_Q3_K_HIFI_RES4;
+            }
+            else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_HIFI) {
+                // Q3_K_HIFI: Always enhance token_embd with FP16 outliers
+                new_type = GGML_TYPE_Q3_K_HIFI;
             }
         }
     } else if (ftype == LLAMA_FTYPE_MOSTLY_IQ2_XXS || ftype == LLAMA_FTYPE_MOSTLY_IQ2_XS || ftype == LLAMA_FTYPE_MOSTLY_IQ1_S ||
@@ -413,8 +421,15 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             if (qs.i_attention_wv < 4) {
                 new_type = GGML_TYPE_Q3_K_HIFI_RES4;  // INT8 residuals for early layers
             }
-            // else: use default Q3_K_HIFI_RES4 for other layers
-            // else: use default Q4_K for non-critical middle/late layers
+            // else: use default Q3_K for non-critical middle/late layers
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_HIFI) {
+            // Q3_K_HIFI: Only enhance first 5 attn_v layers (layers 0-4) with FP16 outliers
+            // Early layers are most sensitive to quantization error
+            if (qs.i_attention_wv < 5) {
+                new_type = GGML_TYPE_Q3_K_HIFI;  // FP16 outliers for early layers
+            }
+            // else: use default Q3_K for non-critical middle/late layers
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_L) new_type = GGML_TYPE_Q5_K;
         else if ((ftype == LLAMA_FTYPE_MOSTLY_IQ4_NL || ftype == LLAMA_FTYPE_MOSTLY_IQ4_XS) && qs.model.hparams.n_gqa() >= 4) {
@@ -704,7 +719,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         case LLAMA_FTYPE_MOSTLY_Q3_K_S:
         case LLAMA_FTYPE_MOSTLY_Q3_K_M:
         case LLAMA_FTYPE_MOSTLY_Q3_K_L:  default_type = GGML_TYPE_Q3_K;    break;
-        case LLAMA_FTYPE_MOSTLY_Q3_K_HIFI: default_type = GGML_TYPE_Q3_K_HIFI; break;  // Q3_K + FP16 outliers
+        case LLAMA_FTYPE_MOSTLY_Q3_K_HIFI: default_type = GGML_TYPE_Q3_K; break;  // Q3_K base, Q3_K_HIFI on critical tensors only
         case LLAMA_FTYPE_MOSTLY_Q3_K_HIFI_RES4: default_type = GGML_TYPE_Q3_K_HIFI_RES4; break;  // Q3_K + 4 INT8 residuals (optimized BPW)
         case LLAMA_FTYPE_MOSTLY_Q4_K_S:
         case LLAMA_FTYPE_MOSTLY_Q4_K_M:  default_type = GGML_TYPE_Q4_K;    break;

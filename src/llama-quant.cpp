@@ -308,8 +308,9 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
                 new_type = GGML_TYPE_Q3_K_HIFI_RES4;
             }
             else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_HIFI) {
-                // Q3_K_HIFI: Always enhance output.weight with FP16 outliers
-                new_type = GGML_TYPE_Q3_K_HIFI;
+                // Q3_K_HIFI HYBRID: Use Q6_K_HIFI on output (Q3_K_M base + FP16 outliers)
+                // This combines Q3_K_M's tensor upgrade strategy with outlier preservation
+                new_type = GGML_TYPE_Q6_K_HIFI;
             }
             else if (new_type != GGML_TYPE_Q8_0) {
                 new_type = GGML_TYPE_Q6_K;
@@ -351,8 +352,8 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
                 new_type = GGML_TYPE_Q3_K_HIFI_RES4;
             }
             else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_HIFI) {
-                // Q3_K_HIFI: Always enhance token_embd with FP16 outliers
-                new_type = GGML_TYPE_Q3_K_HIFI;
+                // Q3_K_HIFI HYBRID: Use Q6_K_HIFI on token_embd (Q3_K_M base + FP16 outliers)
+                new_type = GGML_TYPE_Q6_K_HIFI;
             }
         }
     } else if (ftype == LLAMA_FTYPE_MOSTLY_IQ2_XXS || ftype == LLAMA_FTYPE_MOSTLY_IQ2_XS || ftype == LLAMA_FTYPE_MOSTLY_IQ1_S ||
@@ -424,12 +425,9 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             // else: use default Q3_K for non-critical middle/late layers
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_HIFI) {
-            // Q3_K_HIFI: Only enhance first 5 attn_v layers (layers 0-4) with FP16 outliers
-            // Early layers are most sensitive to quantization error
-            if (qs.i_attention_wv < 5) {
-                new_type = GGML_TYPE_Q3_K_HIFI;  // FP16 outliers for early layers
-            }
-            // else: use default Q3_K for non-critical middle/late layers
+            // Q3_K_HIFI HYBRID: Use Q3_K_M's exact attn_v strategy
+            // First 2 layers → Q5_K, rest → Q4_K (matches Q3_K_M proven performance)
+            new_type = qs.i_attention_wv < 2 ? GGML_TYPE_Q5_K : GGML_TYPE_Q4_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_L) new_type = GGML_TYPE_Q5_K;
         else if ((ftype == LLAMA_FTYPE_MOSTLY_IQ4_NL || ftype == LLAMA_FTYPE_MOSTLY_IQ4_XS) && qs.model.hparams.n_gqa() >= 4) {
@@ -480,6 +478,12 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             new_type = i_layer < n_layer/8 ? GGML_TYPE_Q4_K : GGML_TYPE_Q3_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_M) {
+            new_type = i_layer < n_layer/16 ? GGML_TYPE_Q5_K
+                     : arch != LLM_ARCH_FALCON || use_more_bits(i_layer, n_layer) ? GGML_TYPE_Q4_K
+                     : GGML_TYPE_Q3_K;
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_HIFI) {
+            // Q3_K_HIFI HYBRID: Use Q3_K_M's exact ffn_down strategy
             new_type = i_layer < n_layer/16 ? GGML_TYPE_Q5_K
                      : arch != LLM_ARCH_FALCON || use_more_bits(i_layer, n_layer) ? GGML_TYPE_Q4_K
                      : GGML_TYPE_Q3_K;

@@ -306,8 +306,8 @@ typedef struct {
 static_assert(sizeof(block_q3_k_hifi) == sizeof(block_q3_K) + Q3_K_HIFI_OUTLIERS + Q3_K_HIFI_OUTLIERS*sizeof(ggml_half), "wrong q3_k_hifi block size/padding");
 
 // Q3_K_HIFI_RES4: Optimized 3-bit with 4 INT8 residuals for BPW efficiency
-// Uses Q3_K base (110 bytes) + compact INT8 residual correction (13 bytes)
-// Target: BPW ~3.84 per block (vs Q3_K_HIFI's 4.19), smaller files, faster inference
+// Uses Q3_K base (110 bytes) + compact INT8 residual correction (12 bytes)
+// Target: BPW ~3.81 per block (vs Q3_K_HIFI's 4.19), smaller files, faster inference
 // Best for: ≤0.7B models where imatrix isn't available
 #define Q3_K_HIFI_RES4_BLOCK_SIZE 256
 #define Q3_K_HIFI_RES4_OUTLIERS   4
@@ -316,14 +316,15 @@ typedef struct {
     uint8_t hmask[QK_K/8];              // 32 bytes: high bit mask
     uint8_t qs[QK_K/4];                 // 64 bytes: low 2 bits
     uint8_t scales[12];                 // 12 bytes: 16 sub-group scales (6-bit each)
-    ggml_half d;                        // 2 bytes: super-block scale
-    // === RESIDUAL EXTENSION (13 bytes) ===
+    ggml_half d;                        // 2 bytes: super-block scale (ends at offset 110)
+    // === RESIDUAL EXTENSION (12 bytes, no padding needed) ===
+    ggml_half residual_scale;           // 2 bytes: shared scale for residuals (offset 110, 2-byte aligned)
     uint8_t outlier_count;              // 1 byte: active outlier count (0-4)
+    uint8_t _pad;                       // 1 byte: explicit padding for alignment
     uint8_t outlier_idx[Q3_K_HIFI_RES4_OUTLIERS];   // 4 bytes: outlier positions (0-255)
     int8_t residual_vals[Q3_K_HIFI_RES4_OUTLIERS];  // 4 bytes: INT8 residuals
-    float residual_scale;               // 4 bytes: shared scale for residuals
 } block_q3_k_hifi_res4;
-static_assert(sizeof(block_q3_k_hifi_res4) == sizeof(block_q3_K) + 1 + Q3_K_HIFI_RES4_OUTLIERS + Q3_K_HIFI_RES4_OUTLIERS + sizeof(float), "wrong q3_k_hifi_res4 block size/padding");
+static_assert(sizeof(block_q3_k_hifi_res4) == sizeof(block_q3_K) + sizeof(ggml_half) + 1 + 1 + Q3_K_HIFI_RES4_OUTLIERS + Q3_K_HIFI_RES4_OUTLIERS, "wrong q3_k_hifi_res4 block size/padding");
 
 // 4-bit quantization
 // 8 blocks of 32 elements each

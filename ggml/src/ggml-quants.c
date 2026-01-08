@@ -1482,8 +1482,9 @@ void quantize_row_q3_k_hifi_res4_ref(const float * GGML_RESTRICT x, block_q3_k_h
 
         // Handle zero case
         if (max_residual < 1e-8f) max_residual = 1e-8f;
-        block->residual_scale = max_residual;
+        block->residual_scale = GGML_FP32_TO_FP16(max_residual);
         block->outlier_count = Q3_K_HIFI_RES4_OUTLIERS;
+        block->_pad = 0;
 
         // Step 6: Store outlier indices and INT8 residuals
         for (int k_idx = 0; k_idx < Q3_K_HIFI_RES4_OUTLIERS; ++k_idx) {
@@ -1550,8 +1551,9 @@ static void quantize_row_q3_k_hifi_res4_impl(const float * GGML_RESTRICT x, bloc
 
         // Handle zero case
         if (max_residual < 1e-8f) max_residual = 1e-8f;
-        block->residual_scale = max_residual;
+        block->residual_scale = GGML_FP32_TO_FP16(max_residual);
         block->outlier_count = Q3_K_HIFI_RES4_OUTLIERS;
+        block->_pad = 0;
 
         // Step 6: Store outlier indices and INT8 residuals
         for (int k_idx = 0; k_idx < Q3_K_HIFI_RES4_OUTLIERS; ++k_idx) {
@@ -1576,10 +1578,11 @@ void dequantize_row_q3_k_hifi_res4(const block_q3_k_hifi_res4 * GGML_RESTRICT x,
 
         // Step 2: Add residual corrections to outlier positions
         const int count = block->outlier_count;
+        const float res_scale = GGML_FP16_TO_FP32(block->residual_scale);
         for (int k_idx = 0; k_idx < count && k_idx < Q3_K_HIFI_RES4_OUTLIERS; ++k_idx) {
             const int idx = block->outlier_idx[k_idx];
             if (idx < Q3_K_HIFI_RES4_BLOCK_SIZE) {
-                float residual = block->residual_scale * (block->residual_vals[k_idx] / 127.0f);
+                float residual = res_scale * (block->residual_vals[k_idx] / 127.0f);
                 yb[idx] += residual;
             }
         }

@@ -733,7 +733,7 @@ void ggml_vec_dot_q3_k_hifi_res4_q8_K_generic(int n, float * GGML_RESTRICT s, si
         // Add INT8 residual corrections (only 4 outliers)
         const float yd = yb->d;
         const int count = xb->outlier_count;
-        const float residual_scale = xb->residual_scale;
+        const float residual_scale = GGML_FP16_TO_FP32(xb->residual_scale);
 
         for (int k = 0; k < count && k < Q3_K_HIFI_RES4_OUTLIERS; ++k) {
             const int idx = xb->outlier_idx[k];

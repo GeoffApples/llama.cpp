@@ -876,7 +876,7 @@ static __device__ __forceinline__ float vec_dot_q3_k_hifi_res4_q8_1(
     }
 
     // Compute Q3_K bulk dot product (outliers were pre-zeroed during quantization)
-    float sum = vec_dot_q3_K_q8_1_impl<VDR_Q3_K_Q8_1_MMVQ>(vl, vh, u, bq3->scales, scale_offset, d, d8);
+    float sum = vec_dot_q3_K_q8_1_impl_mmvq(vl, vh, u, bq3->scales, scale_offset, d, d8);
 
     // === Q3_K_HIFI_RES4 residual correction ===
     // Each residual contributes: residual_val * res_scale * q8_val * d8

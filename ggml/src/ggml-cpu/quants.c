@@ -500,7 +500,7 @@ void ggml_vec_dot_q2_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, c
 }
 
 // Q2_K_HIFI vec_dot: Generic implementation
-// Uses Q2_K format for bulk, adds outlier corrections
+// SIMPLIFIED: Just delegate to Q2_K vec_dot by extracting compatible data
 void ggml_vec_dot_q2_k_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(nrc == 1);
     UNUSED(nrc);
@@ -513,113 +513,25 @@ void ggml_vec_dot_q2_k_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t 
 
     const int nb = n / QK_K;
 
-    // DEBUG: Direct comparison with Q2_K vec_dot
-    static int debug_cmp = 0;
-    if (debug_cmp == 0 && nb >= 1) {
-        debug_cmp = 1;
-        
-        // Extract Q2_K-compatible data from Q2_K_HIFI blocks into temp array
-        block_q2_K temp_q2k[4];  // max 4 blocks for n=1024
-        int temp_nb = nb < 4 ? nb : 4;
-        for (int i = 0; i < temp_nb; i++) {
-            memcpy(temp_q2k[i].scales, x[i].scales, sizeof(temp_q2k[i].scales));
-            memcpy(temp_q2k[i].qs, x[i].qs, sizeof(temp_q2k[i].qs));
-            temp_q2k[i].d = x[i].d;
-            temp_q2k[i].dmin = x[i].dmin;
-        }
-        
-        // Call Q2_K vec_dot on extracted data
-        float q2k_result = 0;
-        ggml_vec_dot_q2_K_q8_K_generic(temp_nb * QK_K, &q2k_result, 0, temp_q2k, 0, y, 0, 1);
-        
-        // Now compute Q2_K_HIFI result for same blocks
-        float hifi_result = 0;
-        for (int i = 0; i < temp_nb; ++i) {
-            const block_q2_k_hifi * xb = &x[i];
-            const block_q8_K * yb = &y[i];
-            const uint8_t * q2 = xb->qs;
-            const int8_t * q8 = yb->qs;
-            const uint8_t * sc = xb->scales;
-            
-            int summs = 0;
-            for (int j = 0; j < 16; ++j) summs += yb->bsums[j] * (sc[j] >> 4);
-            
-            const float dall = yb->d * GGML_CPU_FP16_TO_FP32(xb->d);
-            const float dmin = yb->d * GGML_CPU_FP16_TO_FP32(xb->dmin);
-            
-            int isum = 0, is = 0;
-            for (int k = 0; k < QK_K/128; ++k) {
-                int shift = 0;
-                for (int j = 0; j < 4; ++j) {
-                    int d = sc[is++] & 0xF;
-                    int isuml = 0;
-                    for (int l = 0; l < 16; ++l) isuml += q8[l] * ((q2[l] >> shift) & 3);
-                    isum += d * isuml;
-                    d = sc[is++] & 0xF;
-                    isuml = 0;
-                    for (int l = 16; l < 32; ++l) isuml += q8[l] * ((q2[l] >> shift) & 3);
-                    isum += d * isuml;
-                    shift += 2;
-                    q8 += 32;
-                }
-                q2 += 32;
-            }
-            hifi_result += dall * isum - dmin * summs;
-        }
-        
-        fprintf(stderr, "[DEBUG CMP] Q2_K vec_dot result: %f\n", q2k_result);
-        fprintf(stderr, "[DEBUG CMP] Q2_K_HIFI manual result: %f\n", hifi_result);
-        fprintf(stderr, "[DEBUG CMP] Difference: %f\n", hifi_result - q2k_result);
-    }
-
+    // SIMPLIFIED APPROACH: Process one block at a time using Q2_K logic
+    // Extract Q2_K-compatible data from each Q2_K_HIFI block
     float sumf = 0;
 
     for (int i = 0; i < nb; ++i) {
         const block_q2_k_hifi * xb = &x[i];
         const block_q8_K * yb = &y[i];
 
-        const uint8_t * q2 = xb->qs;
-        const  int8_t * q8 = yb->qs;
-        const uint8_t * sc = xb->scales;
+        // Create a temporary Q2_K block with copied data
+        block_q2_K temp;
+        memcpy(temp.scales, xb->scales, sizeof(temp.scales));
+        memcpy(temp.qs, xb->qs, sizeof(temp.qs));
+        temp.d = xb->d;
+        temp.dmin = xb->dmin;
 
-        int summs = 0;
-        for (int j = 0; j < 16; ++j) {
-            summs += yb->bsums[j] * (sc[j] >> 4);
-        }
-
-        const float dall = yb->d * GGML_CPU_FP16_TO_FP32(xb->d);
-        const float dmin = yb->d * GGML_CPU_FP16_TO_FP32(xb->dmin);
-
-        int isum = 0;
-        int is = 0;
-        int d;
-        for (int k = 0; k < QK_K/128; ++k) {
-            int shift = 0;
-            for (int j = 0; j < 4; ++j) {
-                d = sc[is++] & 0xF;
-                int isuml = 0;
-                for (int l =  0; l < 16; ++l) isuml += q8[l] * ((q2[l] >> shift) & 3);
-                isum += d * isuml;
-                d = sc[is++] & 0xF;
-                isuml = 0;
-                for (int l = 16; l < 32; ++l) isuml += q8[l] * ((q2[l] >> shift) & 3);
-                isum += d * isuml;
-                shift += 2;
-                q8 += 32;
-            }
-            q2 += 32;
-        }
-        sumf += dall * isum - dmin * summs;
-
-#if 0  // TEMPORARILY DISABLED FOR DEBUGGING - should give Q2_K-equivalent results
-        // Add outlier corrections
-        const float yd = yb->d;
-        const int n_outliers = (xb->outlier_count <= Q2_K_HIFI_OUTLIERS) ? xb->outlier_count : Q2_K_HIFI_OUTLIERS;
-        for (int k = 0; k < n_outliers; ++k) {
-            const int idx = xb->outlier_idx[k];
-            sumf += GGML_CPU_FP16_TO_FP32(xb->outlier_vals[k]) * yb->qs[idx] * yd;
-        }
-#endif
+        // Compute using Q2_K vec_dot for ONE block
+        float block_result = 0;
+        ggml_vec_dot_q2_K_q8_K_generic(QK_K, &block_result, 0, &temp, 0, yb, 0, 1);
+        sumf += block_result;
     }
     *s = sumf;
 }

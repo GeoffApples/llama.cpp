@@ -552,6 +552,7 @@ void ggml_vec_dot_q2_k_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t 
         }
         sumf += dall * isum - dmin * summs;
 
+#if 0  // TEMPORARILY DISABLED FOR DEBUGGING - should give Q2_K-equivalent results
         // Add outlier corrections
         const float yd = yb->d;
         const int n_outliers = (xb->outlier_count <= Q2_K_HIFI_OUTLIERS) ? xb->outlier_count : Q2_K_HIFI_OUTLIERS;
@@ -559,6 +560,7 @@ void ggml_vec_dot_q2_k_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t 
             const int idx = xb->outlier_idx[k];
             sumf += GGML_CPU_FP16_TO_FP32(xb->outlier_vals[k]) * yb->qs[idx] * yd;
         }
+#endif
     }
     *s = sumf;
 }

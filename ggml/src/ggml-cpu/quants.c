@@ -513,23 +513,63 @@ void ggml_vec_dot_q2_k_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t 
 
     const int nb = n / QK_K;
 
-    // DEBUG: Check block stride - CRITICAL
-    static int debug_stride = 0;
-    if (debug_stride == 0 && nb >= 2) {
-        debug_stride = 1;
-        const uint8_t * addr0 = (const uint8_t *)&x[0];
-        const uint8_t * addr1 = (const uint8_t *)&x[1];
-        ptrdiff_t actual_stride = addr1 - addr0;
-        fprintf(stderr, "[DEBUG STRIDE] x[0]=%p, x[1]=%p, stride=%td bytes (expected 136)\n",
-                (void*)addr0, (void*)addr1, actual_stride);
-        fprintf(stderr, "[DEBUG STRIDE] sizeof(block_q2_k_hifi)=%zu, sizeof(block_q2_K)=%zu\n",
-                sizeof(block_q2_k_hifi), sizeof(block_q2_K));
+    // DEBUG: Direct comparison with Q2_K vec_dot
+    static int debug_cmp = 0;
+    if (debug_cmp == 0 && nb >= 1) {
+        debug_cmp = 1;
         
-        // Print d/dmin from both blocks
-        fprintf(stderr, "[DEBUG STRIDE] block[0]: d=%f, dmin=%f, outlier_count=%d\n",
-                GGML_CPU_FP16_TO_FP32(x[0].d), GGML_CPU_FP16_TO_FP32(x[0].dmin), x[0].outlier_count);
-        fprintf(stderr, "[DEBUG STRIDE] block[1]: d=%f, dmin=%f, outlier_count=%d\n",
-                GGML_CPU_FP16_TO_FP32(x[1].d), GGML_CPU_FP16_TO_FP32(x[1].dmin), x[1].outlier_count);
+        // Extract Q2_K-compatible data from Q2_K_HIFI blocks into temp array
+        block_q2_K temp_q2k[4];  // max 4 blocks for n=1024
+        int temp_nb = nb < 4 ? nb : 4;
+        for (int i = 0; i < temp_nb; i++) {
+            memcpy(temp_q2k[i].scales, x[i].scales, sizeof(temp_q2k[i].scales));
+            memcpy(temp_q2k[i].qs, x[i].qs, sizeof(temp_q2k[i].qs));
+            temp_q2k[i].d = x[i].d;
+            temp_q2k[i].dmin = x[i].dmin;
+        }
+        
+        // Call Q2_K vec_dot on extracted data
+        float q2k_result = 0;
+        ggml_vec_dot_q2_K_q8_K_generic(temp_nb * QK_K, &q2k_result, 0, temp_q2k, 0, y, 0, 1);
+        
+        // Now compute Q2_K_HIFI result for same blocks
+        float hifi_result = 0;
+        for (int i = 0; i < temp_nb; ++i) {
+            const block_q2_k_hifi * xb = &x[i];
+            const block_q8_K * yb = &y[i];
+            const uint8_t * q2 = xb->qs;
+            const int8_t * q8 = yb->qs;
+            const uint8_t * sc = xb->scales;
+            
+            int summs = 0;
+            for (int j = 0; j < 16; ++j) summs += yb->bsums[j] * (sc[j] >> 4);
+            
+            const float dall = yb->d * GGML_CPU_FP16_TO_FP32(xb->d);
+            const float dmin = yb->d * GGML_CPU_FP16_TO_FP32(xb->dmin);
+            
+            int isum = 0, is = 0;
+            for (int k = 0; k < QK_K/128; ++k) {
+                int shift = 0;
+                for (int j = 0; j < 4; ++j) {
+                    int d = sc[is++] & 0xF;
+                    int isuml = 0;
+                    for (int l = 0; l < 16; ++l) isuml += q8[l] * ((q2[l] >> shift) & 3);
+                    isum += d * isuml;
+                    d = sc[is++] & 0xF;
+                    isuml = 0;
+                    for (int l = 16; l < 32; ++l) isuml += q8[l] * ((q2[l] >> shift) & 3);
+                    isum += d * isuml;
+                    shift += 2;
+                    q8 += 32;
+                }
+                q2 += 32;
+            }
+            hifi_result += dall * isum - dmin * summs;
+        }
+        
+        fprintf(stderr, "[DEBUG CMP] Q2_K vec_dot result: %f\n", q2k_result);
+        fprintf(stderr, "[DEBUG CMP] Q2_K_HIFI manual result: %f\n", hifi_result);
+        fprintf(stderr, "[DEBUG CMP] Difference: %f\n", hifi_result - q2k_result);
     }
 
     float sumf = 0;

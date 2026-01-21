@@ -1570,6 +1570,16 @@ void quantize_row_q2_k_hifi_ref(const float * GGML_RESTRICT x, block_q2_k_hifi *
         block->d = q2k_block.d;
         block->dmin = q2k_block.dmin;
 
+        // DEBUG: Verify d and dmin are correctly copied
+        static int debug_count = 0;
+        if (debug_count < 5) {
+            fprintf(stderr, "[DEBUG QUANT] block %d: q2k_block.d=%f, q2k_block.dmin=%f, block->d=%f, block->dmin=%f\n",
+                    debug_count,
+                    GGML_FP16_TO_FP32(q2k_block.d), GGML_FP16_TO_FP32(q2k_block.dmin),
+                    GGML_FP16_TO_FP32(block->d), GGML_FP16_TO_FP32(block->dmin));
+            debug_count++;
+        }
+
         // Step 3: Dequantize to get reconstructed values
         float x_recon[Q2_K_HIFI_BLOCK_SIZE];
         dequantize_row_q2_K(&q2k_block, x_recon, Q2_K_HIFI_BLOCK_SIZE);

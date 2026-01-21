@@ -519,6 +519,18 @@ void ggml_vec_dot_q2_k_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t 
 
     float sumf = 0;
 
+    // DEBUG: Print block layout info once
+    static int layout_debug = 0;
+    if (layout_debug < 1) {
+        fprintf(stderr, "[DEBUG VECDOT] sizeof(block_q2_k_hifi)=%zu, sizeof(block_q2_K)=%zu\n",
+                sizeof(block_q2_k_hifi), sizeof(block_q2_K));
+        fprintf(stderr, "[DEBUG VECDOT] block[0] d=%f, dmin=%f, outlier_count=%d\n",
+                GGML_CPU_FP16_TO_FP32(x[0].d), GGML_CPU_FP16_TO_FP32(x[0].dmin), x[0].outlier_count);
+        fprintf(stderr, "[DEBUG VECDOT] block[0] scales[0-3]=%d,%d,%d,%d\n",
+                x[0].scales[0], x[0].scales[1], x[0].scales[2], x[0].scales[3]);
+        layout_debug++;
+    }
+
     for (int i = 0; i < nb; ++i) {
         const block_q2_k_hifi * xb = &x[i];
         const block_q8_K * yb = &y[i];

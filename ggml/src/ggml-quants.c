@@ -1566,7 +1566,9 @@ void quantize_row_q2_k_hifi_ref(const float * GGML_RESTRICT x, block_q2_k_hifi *
         // Step 2: Copy Q2_K fields to our block (first 84 bytes are identical layout)
         memcpy(block->scales, q2k_block.scales, sizeof(block->scales));
         memcpy(block->qs, q2k_block.qs, sizeof(block->qs));
-        block->dm = q2k_block.dm;
+        // Copy d and dmin explicitly to avoid potential union access issues
+        block->d = q2k_block.d;
+        block->dmin = q2k_block.dmin;
 
         // Step 3: Dequantize to get reconstructed values
         float x_recon[Q2_K_HIFI_BLOCK_SIZE];
@@ -1626,7 +1628,9 @@ void quantize_row_q2_k_hifi_ref_weighted(const float * GGML_RESTRICT x, block_q2
         // Step 2: Copy Q2_K fields to our block
         memcpy(block->scales, q2k_block.scales, sizeof(block->scales));
         memcpy(block->qs, q2k_block.qs, sizeof(block->qs));
-        block->dm = q2k_block.dm;
+        // Copy d and dmin explicitly to avoid potential union access issues
+        block->d = q2k_block.d;
+        block->dmin = q2k_block.dmin;
 
         // Step 3: Dequantize to get reconstructed values
         float x_recon[Q2_K_HIFI_BLOCK_SIZE];

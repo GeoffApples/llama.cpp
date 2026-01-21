@@ -502,6 +502,10 @@ void ggml_vec_dot_q2_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, c
 // Q2_K_HIFI vec_dot: Generic implementation
 // Uses Q2_K format for bulk, adds outlier corrections
 void ggml_vec_dot_q2_k_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    static int call_count = 0;
+    if (call_count < 5) {
+        fprintf(stderr, "[DEBUG] CPU Q2_K_HIFI vec_dot called! n=%d, call #%d\n", n, ++call_count);
+    }
     assert(nrc == 1);
     UNUSED(nrc);
     UNUSED(bx);

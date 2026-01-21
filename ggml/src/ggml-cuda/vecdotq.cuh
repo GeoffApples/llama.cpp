@@ -753,6 +753,11 @@ static __device__ __forceinline__ float vec_dot_q2_K_q8_1(
 static __device__ __forceinline__ float vec_dot_q2_k_hifi_q8_1(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
 
+    // DEBUG: Print once to verify this code is being used
+    if (threadIdx.x == 0 && blockIdx.x == 0 && kbx == 0 && iqs == 0) {
+        printf("[DEBUG] CUDA Q2_K_HIFI vec_dot called!\n");
+    }
+
     // Use block_q2_k_hifi for correct stride, but only access Q2_K-compatible fields
     // Residual corrections are applied in the dequant path, not here
     const block_q2_k_hifi * bq2_k_hifi = (const block_q2_k_hifi *) vbq + kbx;

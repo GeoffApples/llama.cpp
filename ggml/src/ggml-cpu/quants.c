@@ -502,10 +502,6 @@ void ggml_vec_dot_q2_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, c
 // Q2_K_HIFI vec_dot: Generic implementation
 // Uses Q2_K format for bulk, adds outlier corrections
 void ggml_vec_dot_q2_k_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
-    static int call_count = 0;
-    if (call_count < 5) {
-        fprintf(stderr, "[DEBUG] CPU Q2_K_HIFI vec_dot called! n=%d, call #%d\n", n, ++call_count);
-    }
     assert(nrc == 1);
     UNUSED(nrc);
     UNUSED(bx);
@@ -517,19 +513,63 @@ void ggml_vec_dot_q2_k_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t 
 
     const int nb = n / QK_K;
 
-    float sumf = 0;
-
-    // DEBUG: Print block layout info once
-    static int layout_debug = 0;
-    if (layout_debug < 1) {
-        fprintf(stderr, "[DEBUG VECDOT] sizeof(block_q2_k_hifi)=%zu, sizeof(block_q2_K)=%zu\n",
-                sizeof(block_q2_k_hifi), sizeof(block_q2_K));
-        fprintf(stderr, "[DEBUG VECDOT] block[0] d=%f, dmin=%f, outlier_count=%d\n",
-                GGML_CPU_FP16_TO_FP32(x[0].d), GGML_CPU_FP16_TO_FP32(x[0].dmin), x[0].outlier_count);
-        fprintf(stderr, "[DEBUG VECDOT] block[0] scales[0-3]=%d,%d,%d,%d\n",
-                x[0].scales[0], x[0].scales[1], x[0].scales[2], x[0].scales[3]);
-        layout_debug++;
+    // DEBUG: Compare with Q2_K result on first call
+    static int debug_compare = 0;
+    if (debug_compare < 3) {
+        // Call Q2_K vec_dot on same data (reinterpreting as Q2_K blocks - WRONG stride!)
+        // This won't work because Q2_K expects 84-byte blocks but we have 136-byte blocks
+        // So let's manually compute what Q2_K would give for the first block
+        const block_q2_k_hifi * xb = &x[0];
+        const block_q8_K * yb = &y[0];
+        
+        // Compute Q2_K-style result for block 0
+        int summs_dbg = 0;
+        for (int j = 0; j < 16; ++j) {
+            summs_dbg += yb->bsums[j] * (xb->scales[j] >> 4);
+        }
+        const float dall_dbg = yb->d * GGML_CPU_FP16_TO_FP32(xb->d);
+        const float dmin_dbg = yb->d * GGML_CPU_FP16_TO_FP32(xb->dmin);
+        
+        int isum_dbg = 0;
+        int is_dbg = 0;
+        const uint8_t * q2_dbg = xb->qs;
+        const int8_t * q8_dbg = yb->qs;
+        for (int k = 0; k < QK_K/128; ++k) {
+            int shift = 0;
+            for (int j = 0; j < 4; ++j) {
+                int d_dbg = xb->scales[is_dbg++] & 0xF;
+                int isuml = 0;
+                for (int l = 0; l < 16; ++l) isuml += q8_dbg[l] * ((q2_dbg[l] >> shift) & 3);
+                isum_dbg += d_dbg * isuml;
+                d_dbg = xb->scales[is_dbg++] & 0xF;
+                isuml = 0;
+                for (int l = 16; l < 32; ++l) isuml += q8_dbg[l] * ((q2_dbg[l] >> shift) & 3);
+                isum_dbg += d_dbg * isuml;
+                shift += 2;
+                q8_dbg += 32;
+            }
+            q2_dbg += 32;
+        }
+        float block0_result = dall_dbg * isum_dbg - dmin_dbg * summs_dbg;
+        
+        fprintf(stderr, "[DEBUG COMPARE] block0: dall=%f, dmin=%f, isum=%d, summs=%d, result=%f\n",
+                dall_dbg, dmin_dbg, isum_dbg, summs_dbg, block0_result);
+        fprintf(stderr, "[DEBUG COMPARE] y->d=%f, x->d_raw=0x%04x, x->dmin_raw=0x%04x\n",
+                yb->d, xb->d, xb->dmin);
+        
+        // Check memory layout - print raw bytes of first block
+        const uint8_t * raw = (const uint8_t *)xb;
+        fprintf(stderr, "[DEBUG RAW] First 20 bytes: ");
+        for (int b = 0; b < 20; ++b) fprintf(stderr, "%02x ", raw[b]);
+        fprintf(stderr, "\n");
+        fprintf(stderr, "[DEBUG RAW] Bytes 80-90 (d,dmin,ext): ");
+        for (int b = 80; b < 90; ++b) fprintf(stderr, "%02x ", raw[b]);
+        fprintf(stderr, "\n");
+        
+        debug_compare++;
     }
+
+    float sumf = 0;
 
     for (int i = 0; i < nb; ++i) {
         const block_q2_k_hifi * xb = &x[i];

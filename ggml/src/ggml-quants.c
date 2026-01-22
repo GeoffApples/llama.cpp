@@ -1442,16 +1442,16 @@ size_t quantize_q3_k_hifi(const float * GGML_RESTRICT src, void * GGML_RESTRICT 
 // 12 outliers provide good correction capacity while keeping overhead reasonable.
 
 void quantize_row_q2_k_hifi_ref(const float * GGML_RESTRICT x, block_q2_k_hifi * GGML_RESTRICT y, int64_t k) {
-    assert(k % Q2_K_HIFI_BLOCK_SIZE == 0);
-    const int64_t nb = k / Q2_K_HIFI_BLOCK_SIZE;
+    assert(k % QK_K == 0);
+    const int64_t nb = k / QK_K;
 
     for (int64_t ib = 0; ib < nb; ++ib) {
-        const float * xb = x + ib * Q2_K_HIFI_BLOCK_SIZE;
+        const float * xb = x + ib * QK_K;
         block_q2_k_hifi * block = &y[ib];
 
         // Step 1: Find top-12 outliers by absolute magnitude
-        float abs_vals[Q2_K_HIFI_BLOCK_SIZE];
-        for (int i = 0; i < Q2_K_HIFI_BLOCK_SIZE; ++i) {
+        float abs_vals[QK_K];
+        for (int i = 0; i < QK_K; ++i) {
             abs_vals[i] = fabsf(xb[i]);
         }
 
@@ -1459,7 +1459,7 @@ void quantize_row_q2_k_hifi_ref(const float * GGML_RESTRICT x, block_q2_k_hifi *
         for (int k_idx = 0; k_idx < Q2_K_HIFI_OUTLIERS; ++k_idx) {
             int argmax = 0;
             float max_val = abs_vals[0];
-            for (int i = 1; i < Q2_K_HIFI_BLOCK_SIZE; ++i) {
+            for (int i = 1; i < QK_K; ++i) {
                 if (abs_vals[i] > max_val) {
                     max_val = abs_vals[i];
                     argmax = i;
@@ -1471,19 +1471,19 @@ void quantize_row_q2_k_hifi_ref(const float * GGML_RESTRICT x, block_q2_k_hifi *
 
         // Step 2: Create CLEANED copy with outliers ZEROED
         // This is CRITICAL - Q2_K must not try to represent extreme values
-        bool is_outlier[Q2_K_HIFI_BLOCK_SIZE] = {false};
+        bool is_outlier[QK_K] = {false};
         for (int k_idx = 0; k_idx < Q2_K_HIFI_OUTLIERS; ++k_idx) {
             is_outlier[outlier_indices[k_idx]] = true;
         }
 
-        float xb_clean[Q2_K_HIFI_BLOCK_SIZE];
-        for (int i = 0; i < Q2_K_HIFI_BLOCK_SIZE; ++i) {
+        float xb_clean[QK_K];
+        for (int i = 0; i < QK_K; ++i) {
             xb_clean[i] = is_outlier[i] ? 0.0f : xb[i];
         }
 
         // Step 3: Quantize ONLY the cleaned data (outliers zeroed)
         block_q2_K q2k_block;
-        quantize_row_q2_K_ref(xb_clean, &q2k_block, Q2_K_HIFI_BLOCK_SIZE);
+        quantize_row_q2_K_ref(xb_clean, &q2k_block, QK_K);  // Use QK_K for Q2_K compatibility
 
         // Step 4: Copy Q2_K fields to our block
         memcpy(block->scales, q2k_block.scales, sizeof(block->scales));
@@ -1492,8 +1492,8 @@ void quantize_row_q2_k_hifi_ref(const float * GGML_RESTRICT x, block_q2_k_hifi *
         block->dmin = q2k_block.dmin;
 
         // Step 5: Dequantize Q2_K to compute what it actually produces
-        float x_recon[Q2_K_HIFI_BLOCK_SIZE];
-        dequantize_row_q2_K(&q2k_block, x_recon, Q2_K_HIFI_BLOCK_SIZE);
+        float x_recon[QK_K];
+        dequantize_row_q2_K(&q2k_block, x_recon, QK_K);
 
         // Step 6: Store outlier indices and RESIDUALS (original - reconstruction)
         // This ensures vec_dot can ADD residuals and get correct result
@@ -1510,18 +1510,18 @@ void quantize_row_q2_k_hifi_ref(const float * GGML_RESTRICT x, block_q2_k_hifi *
 }
 
 static void quantize_row_q2_k_hifi_impl(const float * GGML_RESTRICT x, block_q2_k_hifi * GGML_RESTRICT y, int64_t k, const float * GGML_RESTRICT quant_weights) {
-    assert(k % Q2_K_HIFI_BLOCK_SIZE == 0);
-    const int64_t nb = k / Q2_K_HIFI_BLOCK_SIZE;
+    assert(k % QK_K == 0);
+    const int64_t nb = k / QK_K;
 
     for (int64_t ib = 0; ib < nb; ++ib) {
-        const float * xb = x + ib * Q2_K_HIFI_BLOCK_SIZE;
-        const float * qw = quant_weights ? quant_weights + ib * Q2_K_HIFI_BLOCK_SIZE : NULL;
+        const float * xb = x + ib * QK_K;
+        const float * qw = quant_weights ? quant_weights + ib * QK_K : NULL;
         block_q2_k_hifi * block = &y[ib];
 
         // Step 1: Find top-12 outliers by WEIGHTED absolute magnitude
         // Weight by importance (imatrix) if available - prioritize protecting important weights
-        float weighted_abs[Q2_K_HIFI_BLOCK_SIZE];
-        for (int i = 0; i < Q2_K_HIFI_BLOCK_SIZE; ++i) {
+        float weighted_abs[QK_K];
+        for (int i = 0; i < QK_K; ++i) {
             weighted_abs[i] = fabsf(xb[i]) * (qw ? qw[i] : 1.0f);
         }
 
@@ -1529,7 +1529,7 @@ static void quantize_row_q2_k_hifi_impl(const float * GGML_RESTRICT x, block_q2_
         for (int k_idx = 0; k_idx < Q2_K_HIFI_OUTLIERS; ++k_idx) {
             int argmax = 0;
             float max_val = weighted_abs[0];
-            for (int i = 1; i < Q2_K_HIFI_BLOCK_SIZE; ++i) {
+            for (int i = 1; i < QK_K; ++i) {
                 if (weighted_abs[i] > max_val) {
                     max_val = weighted_abs[i];
                     argmax = i;
@@ -1540,19 +1540,19 @@ static void quantize_row_q2_k_hifi_impl(const float * GGML_RESTRICT x, block_q2_
         }
 
         // Step 2: Create CLEANED copy with outliers ZEROED
-        bool is_outlier[Q2_K_HIFI_BLOCK_SIZE] = {false};
+        bool is_outlier[QK_K] = {false};
         for (int k_idx = 0; k_idx < Q2_K_HIFI_OUTLIERS; ++k_idx) {
             is_outlier[outlier_indices[k_idx]] = true;
         }
 
-        float xb_clean[Q2_K_HIFI_BLOCK_SIZE];
-        for (int i = 0; i < Q2_K_HIFI_BLOCK_SIZE; ++i) {
+        float xb_clean[QK_K];
+        for (int i = 0; i < QK_K; ++i) {
             xb_clean[i] = is_outlier[i] ? 0.0f : xb[i];
         }
 
         // Step 3: Quantize ONLY the cleaned data (outliers zeroed)
         block_q2_K q2k_block;
-        quantize_row_q2_K_ref(xb_clean, &q2k_block, Q2_K_HIFI_BLOCK_SIZE);
+        quantize_row_q2_K_ref(xb_clean, &q2k_block, QK_K);  // Use QK_K for Q2_K compatibility
 
         // Step 4: Copy Q2_K fields to our block
         memcpy(block->scales, q2k_block.scales, sizeof(block->scales));
@@ -1561,8 +1561,8 @@ static void quantize_row_q2_k_hifi_impl(const float * GGML_RESTRICT x, block_q2_
         block->dmin = q2k_block.dmin;
 
         // Step 5: Dequantize Q2_K to compute what it actually produces
-        float x_recon[Q2_K_HIFI_BLOCK_SIZE];
-        dequantize_row_q2_K(&q2k_block, x_recon, Q2_K_HIFI_BLOCK_SIZE);
+        float x_recon[QK_K];
+        dequantize_row_q2_K(&q2k_block, x_recon, QK_K);
 
         // Step 6: Store outlier indices and RESIDUALS (original - reconstruction)
         // This ensures vec_dot can ADD residuals and get correct result
@@ -1579,23 +1579,23 @@ static void quantize_row_q2_k_hifi_impl(const float * GGML_RESTRICT x, block_q2_
 }
 
 void dequantize_row_q2_k_hifi(const block_q2_k_hifi * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
-    assert(k % Q2_K_HIFI_BLOCK_SIZE == 0);
-    const int64_t nb = k / Q2_K_HIFI_BLOCK_SIZE;
+    assert(k % QK_K == 0);
+    const int64_t nb = k / QK_K;
 
     for (int64_t ib = 0; ib < nb; ++ib) {
         const block_q2_k_hifi * block = &x[ib];
-        float * yb = y + ib * Q2_K_HIFI_BLOCK_SIZE;
+        float * yb = y + ib * QK_K;
 
         // Step 1: Dequantize using Q2_K algorithm for single block
         // The first 84 bytes of block_q2_k_hifi match Q2_K exactly
-        dequantize_row_q2_K((const block_q2_K *)block, yb, Q2_K_HIFI_BLOCK_SIZE);
+        dequantize_row_q2_K((const block_q2_K *)block, yb, QK_K);
 
         // Step 2: ADD residuals to outlier positions
         // residual = original - reconstruction, so: original = reconstruction + residual
         const int n_outliers = block->outlier_count <= Q2_K_HIFI_OUTLIERS ? block->outlier_count : Q2_K_HIFI_OUTLIERS;
         for (int k_idx = 0; k_idx < n_outliers; ++k_idx) {
             const int idx = block->outlier_idx[k_idx];
-            if (idx < Q2_K_HIFI_BLOCK_SIZE) {
+            if (idx < QK_K) {
                 yb[idx] += GGML_FP16_TO_FP32(block->outlier_vals[k_idx]);  // ADD residual
             }
         }

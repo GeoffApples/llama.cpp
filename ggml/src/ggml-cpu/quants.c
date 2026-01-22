@@ -61,7 +61,7 @@ void quantize_row_q2_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, i
 }
 
 void quantize_row_q2_k_hifi(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
-    assert(k % Q2_K_HIFI_BLOCK_SIZE == 0);
+    assert(k % QK_K == 0);
     block_q2_k_hifi * GGML_RESTRICT y = vy;
     quantize_row_q2_k_hifi_ref(x, y, k);
 }
@@ -514,7 +514,7 @@ void ggml_vec_dot_q2_k_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t 
     const block_q2_k_hifi * GGML_RESTRICT x = vx;
     const block_q8_K * GGML_RESTRICT y = vy;
 
-    const int nb = n / Q2_K_HIFI_BLOCK_SIZE;
+    const int nb = n / QK_K;
 
     float sumf = 0;
 
@@ -562,7 +562,7 @@ void ggml_vec_dot_q2_k_hifi_q8_K_generic(int n, float * GGML_RESTRICT s, size_t 
         const int n_outliers = xb->outlier_count <= Q2_K_HIFI_OUTLIERS ? xb->outlier_count : Q2_K_HIFI_OUTLIERS;
         for (int k = 0; k < n_outliers; ++k) {
             const int idx = xb->outlier_idx[k];
-            if (idx < Q2_K_HIFI_BLOCK_SIZE) {
+            if (idx < QK_K) {
                 sumf += GGML_FP16_TO_FP32(xb->outlier_vals[k]) * yb->qs[idx] * yd;
             }
         }

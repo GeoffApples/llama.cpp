@@ -154,6 +154,7 @@ chmod +x ./tools/create_mixed_imatrix_dataset.py
 
 python3 ./tools/download_imatrix_datasets.py
 python3 ./tools/create_mixed_imatrix_dataset.py --wikitext wikitext.txt --code codeparrot.txt --math mathqa.txt --output mixed-imatrix-generic-dataset.txt --ratio 60,25,15
+python3 ./tools/create_mixed_imatrix_dataset.py --wikitext wikitext.txt --code codeparrot.txt --math mathqa.txt --output mixed-imatrix-coder-dataset.txt --ratio 20,70,10
 ```
 
 **Note: this will take a long time. Take a copy of this file if you want to use it again.**
@@ -239,37 +240,4 @@ Linux:
 ./benchmark_speed_test.sh
 ```
 
-### Upload to Hugging Face
 
-hf upload geoffmunn/Qwen3-0.6B-f16 ./Qwen3-0.6B-f16-imatrix-4697.gguf Qwen3-0.6B-f16-imatrix-4697.gguf --repo-type model --commit-message "Upload imatrix gguf"
-hf upload geoffmunn/Qwen3-0.6B-f16 ./Qwen3-0.6B-f16:Q5_K_HIFI.gguf Qwen3-0.6B-f16:Q5_K_HIFI.gguf --repo-type model --commit-message "Upload Q5_K_HIFI quantized model"
-hf upload geoffmunn/Qwen3-0.6B-f16 ./Qwen3-0.6B-f16-imatrix:Q5_K_HIFI.gguf Qwen3-0.6B-f16-imatrix:Q5_K_HIFI.gguf --repo-type model --commit-message "Upload Q5_K_HIFI + imatrix quantized model"
-hf upload geoffmunn/Qwen3-0.6B-f16 ./Qwen3-0.6B-f16-imatrix:Q5_K_M.gguf Qwen3-0.6B-f16-imatrix:Q5_K_M.gguf --repo-type model --commit-message "Upload Q5_K_M + imatrix quantized model"
-hf upload geoffmunn/Qwen3-0.6B-f16 ./Qwen3-0.6B-f16-imatrix:Q5_K_S.gguf Qwen3-0.6B-f16-imatrix:Q5_K_S.gguf --repo-type model --commit-message "Upload Q5_K_S + imatrix quantized model"
-hf upload geoffmunn/Qwen3-0.6B-f16 ./mixed-imatrix-dataset.txt mixed-imatrix-dataset.txt --repo-type model --commit-message "imatrix dataset"
-
-
-hf upload geoffmunn/Qwen3-1.7B-f16 ./Qwen3-1.7B-f16:Q2_K.gguf Qwen3-1.7B-f16:Q2_K.gguf --repo-type model --commit-message "Upload Q2_K quantized model"
-hf upload geoffmunn/Qwen3-1.7B-f16 ./Qwen3-1.7B-f16:Q3_K_M.gguf Qwen3-1.7B-f16:Q3_K_M.gguf --repo-type model --commit-message "Upload Q3_K_M quantized model"
-hf upload geoffmunn/Qwen3-1.7B-f16 ./Qwen3-1.7B-f16:Q3_K_S.gguf Qwen3-1.7B-f16:Q3_K_S.gguf --repo-type model --commit-message "Upload Q3_K_S quantized model"
-hf upload geoffmunn/Qwen3-1.7B-f16 ./Qwen3-1.7B-f16:Q4_K_M.gguf Qwen3-1.7B-f16:Q4_K_M.gguf --repo-type model --commit-message "Upload Q4_K_M quantized model"
-hf upload geoffmunn/Qwen3-1.7B-f16 ./Qwen3-1.7B-f16:Q4_K_S.gguf Qwen3-1.7B-f16:Q4_K_S.gguf --repo-type model --commit-message "Upload Q4_K_S quantized model"
-hf upload geoffmunn/Qwen3-1.7B-f16 ./Qwen3-1.7B-f16:Q5_K_M.gguf Qwen3-1.7B-f16:Q5_K_M.gguf --repo-type model --commit-message "Upload Q5_K_M quantized model"
-hf upload geoffmunn/Qwen3-1.7B-f16 ./Qwen3-1.7B-f16:Q5_K_S.gguf Qwen3-1.7B-f16:Q5_K_S.gguf --repo-type model --commit-message "Upload Q5_K_S quantized model"
-hf upload geoffmunn/Qwen3-1.7B-f16 ./Qwen3-1.7B-f16:Q6_K.gguf Qwen3-1.7B-f16:Q6_K.gguf --repo-type model --commit-message "Upload Q6_K quantized model"
-
-
-
-### llama-cli example:
-
-./build/bin/llama-cli -m ./Qwen3-1.7B-f16:Q4_HIFI.gguf -ngl 99 --jinja --chat-template "{% for message in messages %}<|im_start|>{{ message.role }}\n{{ message.content }}<|im_end|>\n{% endfor %}<|im_start|>assistant\n"
-
-The standard configuration for this script is:
-
-```
-  Iterations per model: 100
-  Threads: 4
-  Repeats per run: 3
-  Generate tokens: 20
-  Models: 3
-```
